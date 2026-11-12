@@ -1,0 +1,10 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "include": ["src/main/**/*", "src/shared/**/*", "src/global.d.ts"],
+  "compilerOptions": {
+    "paths": { "@/*": ["./src/*"] },
+    "composite": true,
+    "types": ["@qwqnt/types/main"],
+    "moduleResolution": "bundler"
+  }
+}
