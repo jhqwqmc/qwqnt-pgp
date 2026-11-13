@@ -38,18 +38,13 @@ const api = {
   prepareGroupConfig: (groupId: string) => invoke<{ groupId: string; targets: string[] }>('prepare-group-config', groupId),
   setGroupTarget: (groupId: string, uin: string, enabled: boolean) => invoke<{ groupId: string; targets: string[] }>('set-group-target', groupId, uin, enabled),
   getKeyBindings: (uins: string[]) => invoke<KeyBinding[]>('get-key-bindings', uins),
-  listKeyBindings: (cursor?: string, limit?: number) => invoke<{ items: KeyBinding[]; nextCursor: string | null }>('list-key-bindings', cursor, limit),
+  listKeyBindings: (cursor?: string, limit?: number, query?: string) => invoke<{ items: KeyBinding[]; nextCursor: string | null }>('list-key-bindings', cursor, limit, query),
   setKeyBinding: (uin: string, keyID: string | null) => invoke<void>('set-key-binding', uin, keyID),
   getAutoSendInterceptorStatus: () => rawInvoke<{ available: boolean; reason?: string }>('get-auto-send-interceptor-status'),
 
   detectGpg: () => invoke<GpgStatus>('detect-gpg'),
   listKeys: () => invoke<{ secret: KeyInfo[]; public: KeyInfo[] }>('list-keys'),
   importKey: (armored: string) => invoke<{ keyIDs: string[] }>('import-key', armored),
-  exportKey: (keyID: string, secret = false) => invoke<string>('export-key', keyID, secret),
-  deleteKey: (keyID: string, secret = false) => invoke<void>('delete-key', keyID, secret),
-  setTrust: (fingerprint: string, level: number) => invoke<void>('set-trust', fingerprint, level),
-  revokeKey: (fingerprint: string) => invoke<string>('revoke-key', fingerprint),
-  certifyKey: (fingerprint: string) => invoke<void>('certify-key', fingerprint),
   recvKey: (keyID: string, server?: string) => invoke<string>('recv-key', keyID, server),
   searchKeyserver: (query: string, server?: string) => invoke<KeySearchResult[]>('search-keyserver', query, server),
   searchGithub: (username: string) => invoke<KeySearchResult[]>('search-github', username),
@@ -92,17 +87,6 @@ const api = {
   resolveUin: (uid: string) => invoke<string>('resolve-uin', uid),
   getMessageRecord: (peer: { chatType: number; peerUid: string }, msgId: string) =>
     invoke<{ msgId: string; elements: Array<Record<string, unknown>>; [key: string]: unknown } | null>('get-message-record', peer, msgId),
-  debugUploadWithoutHook: () => invoke<{ resId: string; senderName: string }>('debug-upload-without-hook'),
-  debugProbeEcdh: (serviceType: number, third: 'empty' | 'uin' | 'uid') =>
-    invoke<{ code: number | null; fields: Record<string, string>; byteLengths: number[]; hasResId: boolean }>(
-      'debug-probe-ecdh', serviceType, third
-    ),
-  /** 调试：直接发 SSO 包（cmd + base64） */
-  debugSso: (cmd: string, b64: string) => invoke<{ base64: string; length: number }>('debug-sso', cmd, b64),
-  /** 调试：拼包上传（返回 resId + 回包 base64） */
-  debugUpload: (opts: { selfUid: string; nodes: Array<{ uin: string | number; name: string; groupId?: number; time: number; text: string }>; groupId: number }) =>
-    invoke<{ resId: string; rspBase64: string }>('debug-upload', opts),
-  kernelDiagnose: () => invoke<{ ok: boolean; detail: string }>('kernel-diagnose')
 };
 
 const bridgeKey = Symbol.for('qwqnt-pgp.preload-bridge');

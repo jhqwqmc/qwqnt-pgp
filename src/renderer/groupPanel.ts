@@ -220,24 +220,21 @@ function createPanel(): HTMLElement {
   injectGroupStyle();
   const panel = document.createElement('div');
   panel.id = PANEL_ID;
-  panel.className = 'group-field qwqnt-pgp-group-card';
+  panel.className = 'qwqnt-pgp-group-card';
   panel.innerHTML = `
-    <div class="card-header qwqnt-pgp-group-card-header">
       <div class="qwqnt-pgp-group-head">
-        <span class="header-title">PGP 加密成员</span>
-        <span class="qwqnt-pgp-group-count">已选 0 人</span>
+        <span>加密成员</span>
+        <button class="qwqnt-pgp-group-refresh" type="button" aria-label="刷新成员" title="刷新成员">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5"/><path d="M5.4 9a7 7 0 0 1 11.5-3.3L20 9M4 15l3.1 3.3A7 7 0 0 0 18.6 15"/></svg>
+        </button>
       </div>
-    </div>
-    <div class="card-body qwqnt-pgp-group-card-body">
       <div class="qwqnt-pgp-group-content">
         <div class="qwqnt-pgp-group-tools">
           <input class="qwqnt-pgp-group-search" type="search" placeholder="搜索成员、QQ 号或密钥" aria-label="搜索群成员">
-          <button class="qwqnt-pgp-group-refresh" type="button">刷新</button>
         </div>
-        <div class="qwqnt-pgp-group-status" aria-live="polite">正在拉取群成员…</div>
+        <div class="qwqnt-pgp-group-status" aria-live="polite"></div>
         <div class="qwqnt-pgp-group-list" role="list"></div>
       </div>
-    </div>
   `;
   panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!.addEventListener('click', () => void loadGroup(panel, true));
   panel.querySelector<HTMLInputElement>('.qwqnt-pgp-group-search')!.addEventListener('input', e => {
@@ -254,29 +251,30 @@ function injectGroupStyle(): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-    .qwqnt-pgp-group-card { box-sizing:border-box; width:100%; max-width:100%; min-width:0; margin:8px 0; overflow:hidden; border:1px solid var(--border_level_2,rgba(127,127,127,.24)); border-radius:8px; }
-    .qwqnt-pgp-group-card-header { box-sizing:border-box; width:100%; min-width:0; padding:0; border-bottom:1px solid var(--border_level_1,rgba(127,127,127,.12)); }
-    .qwqnt-pgp-group-head { box-sizing:border-box; display:flex; align-items:center; gap:8px; width:100%; min-width:0; padding:10px 12px; border:0; background:transparent; color:inherit; text-align:left; }
-    .qwqnt-pgp-group-head .header-title { flex:1; min-width:0; font-weight:600; }
-    .qwqnt-pgp-group-count { font-size:12px; opacity:.68; white-space:nowrap; }
-    .qwqnt-pgp-group-card-body { box-sizing:border-box; width:100%; min-width:0; padding:0; }
-    .qwqnt-pgp-group-content { box-sizing:border-box; width:100%; min-width:0; padding:8px 12px 10px; }
+    .qwqnt-pgp-group-card { box-sizing:border-box; min-width:0; margin:8px 0; padding:0 16px 8px; border-radius:8px; background:var(--fill_light_primary,var(--bg_top_standard,Canvas)); color:var(--text_primary,inherit); }
+    .qwqnt-pgp-group-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; font-size:14px; }
+    .qwqnt-pgp-group-content { min-width:0; }
     .qwqnt-pgp-group-tools { display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:6px; }
-    .qwqnt-pgp-group-search { flex:1; width:0; min-width:0; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border_level_2,rgba(127,127,127,.3)); border-radius:6px; background:var(--bg_bottom_standard,transparent); color:var(--text_primary,inherit); }
-    .qwqnt-pgp-group-refresh { flex:none; padding:5px 10px; border:1px solid var(--border_level_2,rgba(127,127,127,.3)); border-radius:6px; background:transparent; color:inherit; cursor:pointer; }
-    .qwqnt-pgp-group-refresh:disabled { opacity:.5; cursor:default; }
+    .qwqnt-pgp-group-search { flex:1; width:0; min-width:0; box-sizing:border-box; padding:5px 8px; border:1px solid var(--border_level_2,rgba(127,127,127,.24)); border-radius:4px; background:rgba(127,127,127,.10); color:inherit; font-size:12px; }
+    .qwqnt-pgp-group-search:focus { outline:2px solid var(--brand_standard,#0099ff); outline-offset:-2px; }
+    .qwqnt-pgp-group-refresh { display:grid; place-items:center; width:24px; height:24px; padding:0; border:0; border-radius:4px; background:transparent; color:var(--text_secondary,inherit); cursor:pointer; }
+    .qwqnt-pgp-group-refresh:hover:not(:disabled) { background:var(--overlay_active,rgba(127,127,127,.1)); }
+    .qwqnt-pgp-group-refresh:disabled { cursor:default; }
+    .qwqnt-pgp-group-refresh[aria-busy=true] svg { animation:qwqnt-pgp-refresh-spin .75s linear infinite; }
+    @keyframes qwqnt-pgp-refresh-spin { to { transform:rotate(360deg); } }
     .qwqnt-pgp-group-status { min-height:18px; margin:4px 0; font-size:12px; opacity:.72; overflow-wrap:anywhere; }
-    .qwqnt-pgp-group-list { box-sizing:border-box; width:100%; max-width:100%; min-width:0; max-height:min(38vh,300px); overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
-    .qwqnt-pgp-member { box-sizing:border-box; display:flex; align-items:center; gap:9px; min-width:0; padding:8px 2px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.12)); font-size:12px; }
+    .qwqnt-pgp-group-status:empty { display:none; }
+    .qwqnt-pgp-group-list { box-sizing:border-box; width:100%; min-width:0; max-height:min(38vh,180px); overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+    .qwqnt-pgp-member { box-sizing:border-box; display:flex; align-items:center; gap:8px; height:36px; min-width:0; padding:0 2px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.12)); font-size:12px; }
     .qwqnt-pgp-member:first-child { border-top:0; }
     .qwqnt-pgp-member-name { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow:hidden; white-space:nowrap; }
-    .qwqnt-pgp-member-nick { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .qwqnt-pgp-member-uin { flex:none; white-space:nowrap; }
-    .qwqnt-pgp-member-self { flex:none; white-space:nowrap; }
-    .qwqnt-pgp-member-meta { flex:none; max-width:18%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; opacity:.62; }
+    .qwqnt-pgp-member-nick { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .qwqnt-pgp-member-uin { flex:none; align-self:center; text-align:right; white-space:nowrap; font-size:11px; font-variant-numeric:tabular-nums; color:var(--text_secondary,inherit); }
     /* Keep QQ's q-switch geometry and handle styling; only reserve its row space. */
     .qwqnt-pgp-member-switch { flex:none; }
     .qwqnt-pgp-member-switch[aria-disabled=true] { opacity:.5; cursor:not-allowed; }
+    #${DM_ID} { position:relative; }
+    #${DM_ID}:not(:last-child)::after { content:''; position:absolute; inset-inline:16px; bottom:0; border-bottom:1px solid var(--border_level_1,rgba(127,127,127,.14)); pointer-events:none; }
   `;
   document.head.append(style);
 }
@@ -346,9 +344,10 @@ function renderPanel(panel: HTMLElement): void {
 }
 
 function renderSummary(panel: HTMLElement, state: GroupPanelState): void {
-  panel.querySelector<HTMLElement>('.qwqnt-pgp-group-count')!.textContent = `已选 ${state.selected.size} 人`;
-  panel.querySelector<HTMLElement>('.qwqnt-pgp-group-status')!.textContent = state.error || (state.loading ? '正在拉取群成员…' : state.members.length ? `已绑定成员 ${state.members.length} 人` : state.groupId ? '暂无已绑定公钥成员' : '当前群聊信息不可用');
-  panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!.disabled = state.loading || !state.groupId;
+  panel.querySelector<HTMLElement>('.qwqnt-pgp-group-status')!.textContent = state.loading ? '' : state.error || (state.groupId ? '' : '当前群聊信息不可用');
+  const refresh = panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
+  refresh.disabled = state.loading || !state.groupId;
+  refresh.setAttribute('aria-busy', String(state.loading));
 }
 
 function renderRows(panel: HTMLElement): void {
@@ -362,10 +361,6 @@ function renderRows(panel: HTMLElement): void {
     return !query || `${member.name} ${member.uin} ${key}`.toLocaleLowerCase().includes(query);
   });
   if (state.loading && !state.members.length) {
-    const loading = document.createElement('div');
-    loading.className = 'qwqnt-pgp-group-status';
-    loading.textContent = '正在拉取群成员…';
-    list.append(loading);
     return;
   }
   if (!state.loading && !state.error && state.members.length && !filtered.length) {
@@ -375,7 +370,7 @@ function renderRows(panel: HTMLElement): void {
     list.append(empty);
     return;
   }
-  if (!state.loading && !state.error && !state.members.length) {
+  if (!state.loading && !state.error && state.groupId && !state.members.length) {
     const empty = document.createElement('div');
     empty.className = 'qwqnt-pgp-group-status';
     empty.textContent = '群内暂无已绑定公钥的成员';
@@ -389,6 +384,7 @@ function renderRows(panel: HTMLElement): void {
     const selected = self || state.selected.has(id);
     const row = document.createElement('div');
     row.className = `qwqnt-pgp-member${self ? ' is-self' : ''}`;
+    row.title = `${member.name} (${id})${keyID ? ` · ${keyID}` : ''}`;
     const name = document.createElement('span');
     name.className = 'qwqnt-pgp-member-name';
     const nick = document.createElement('span');
@@ -396,17 +392,8 @@ function renderRows(panel: HTMLElement): void {
     nick.textContent = member.name;
     const uin = document.createElement('span');
     uin.className = 'qwqnt-pgp-member-uin';
-    uin.textContent = `(${id})`;
-    name.append(nick, uin);
-    if (self) {
-      const selfLabel = document.createElement('span');
-      selfLabel.className = 'qwqnt-pgp-member-self';
-      selfLabel.textContent = '· 自己';
-      name.append(selfLabel);
-    }
-    const meta = document.createElement('span');
-    meta.className = 'qwqnt-pgp-member-meta';
-    meta.textContent = keyID.slice(-8);
+    uin.textContent = id;
+    name.append(nick);
     const sw = document.createElement('div');
     sw.className = 'q-switch vue-component qwqnt-pgp-member-switch';
     sw.setAttribute('role', 'switch');
@@ -440,7 +427,7 @@ function renderRows(panel: HTMLElement): void {
       event.preventDefault();
       toggle();
     });
-    row.append(name, meta, sw);
+    row.append(name, uin, sw);
     list.append(row);
   }
 }
@@ -630,6 +617,7 @@ let dmRenderVersion = 0;
 export function startDmToggle(): void {
   if (dmToggleStarted) return;
   dmToggleStarted = true;
+  injectGroupStyle();
   // Details are mounted asynchronously after the header button click. Observe
   // detail/header DOM changes and debounce one check instead of polling.
   let queued = false;
@@ -708,17 +696,17 @@ async function tickDm(): Promise<void> {
   const bound = !!binding?.keyID;
   let item = document.getElementById(DM_ID) as HTMLElement | null;
   if (!item || !list.contains(item)) {
-    item = buildDmItem();
+    item = buildDmItem(list.querySelector<HTMLElement>(':scope > .q-list-item'));
     list.insertBefore(item, list.firstElementChild);
   }
   const sw = item.querySelector<HTMLElement>('.q-switch');
   if (!sw) return;
-  const on = !!dm?.enabled;
+  const on = bound && !!dm?.enabled;
   sw.setAttribute('aria-checked', on ? 'true' : 'false');
   sw.classList.toggle('is-active', on);
   sw.setAttribute('aria-disabled', bound ? 'false' : 'true');
-  item.style.opacity = bound ? '1' : '.5';
-  item.title = bound ? 'PGP 加密' : '未绑定公钥（去设置里绑定后才能开启）';
+  sw.style.opacity = bound ? '' : '.5';
+  item.title = bound ? '加密' : '未绑定公钥（去设置里绑定后才能开启）';
 
   sw.onclick = async () => {
     if (!bound || !isCurrentAccount(accountId, accountEpoch)) return;
@@ -738,16 +726,15 @@ async function tickDm(): Promise<void> {
 }
 
 /** 完全照 QQ 自己的 q-list-item + q-switch 结构做，视觉原生 */
-function buildDmItem(): HTMLElement {
-  const item = document.createElement('div');
+function buildDmItem(nativeItem: HTMLElement | null): HTMLElement {
+  const item = nativeItem ? nativeItem.cloneNode(false) as HTMLElement : document.createElement('div');
   item.id = DM_ID;
-  item.className = 'q-list-item';
+  item.className = 'q-list-item vue-component';
+  item.removeAttribute('style');
   item.innerHTML = `
-    <div class="q-list-item_title">
-      <h5>PGP 加密</h5>
-    </div>
+    <div class="q-list-item_title"><h5>加密</h5></div>
     <div class="q-list-item_tail">
-      <div class="q-switch vue-component" role="switch" aria-checked="false" aria-disabled="false" tabindex="0"><span class="q-switch__handle"></span></div>
+      <div class="q-switch vue-component" role="switch" aria-label="加密" aria-checked="false" aria-disabled="false" tabindex="0"><span class="q-switch__handle"></span></div>
     </div>
   `;
   return item;

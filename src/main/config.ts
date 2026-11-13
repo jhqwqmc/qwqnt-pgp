@@ -9,7 +9,6 @@ export const DEFAULT_CONFIG: PgpConfig = {
   autoDecrypt: true,
   sendPolicy: 'manual',
   hotkey: 'Ctrl+/',
-  sliceLength: 3000,
   gpgPath: '',
   gpgHome: '',
   keyserver: 'keys.openpgp.org',
@@ -96,6 +95,5 @@ function normalize(raw: Partial<PgpConfig> | null): PgpConfig {
     if (typeof supplied === typeof cfg[key] && supplied !== null) Object.assign(cfg, { [key]: supplied });
   }
   if (!['manual', 'auto', 'off'].includes(cfg.sendPolicy)) cfg.sendPolicy = DEFAULT_CONFIG.sendPolicy;
-  cfg.sliceLength = Number.isFinite(cfg.sliceLength) ? Math.max(200, Math.floor(cfg.sliceLength)) : DEFAULT_CONFIG.sliceLength;
   return cfg;
 }

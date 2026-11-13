@@ -50,7 +50,6 @@ function message(writer: Buffer[], field: number, write: (writer: Buffer[]) => v
 function writeForwardNode(writer: Buffer[], node: ForwardNode, selfUid: string): void {
   const uin = Number(node.uin) || 0;
   const seq = randomBytes(4).readUInt32LE(0);
-  const avatar = `https://q.qlogo.cn/headimg_dl?dst_uin=${uin}&spec=0&img_type=jpg`;
 
   message(writer, 1, header => {
     if (uin) number(header, 1, uin);
@@ -76,8 +75,6 @@ function writeForwardNode(writer: Buffer[], node: ForwardNode, selfUid: string):
       number(preview, 1, 0);
       number(preview, 2, 0);
       number(preview, 3, node.groupId ? 1 : 2);
-      text(preview, 5, avatar);
-      text(preview, 6, avatar);
     });
   });
   message(writer, 3, body => {

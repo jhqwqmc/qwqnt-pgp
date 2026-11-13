@@ -195,7 +195,7 @@ function scanHydrationCandidates(): void {
 function isForwardCandidate(owner: Element): boolean {
   const body = messageContent(owner)?.textContent?.trim() ?? '';
   const record = messageRecord(owner);
-  return /^(?:\[聊天记录\]|\[转发消息\]|\[暂不支持该消息类型[^\]]*\]|暂不支持该消息类型)/.test(body) ||
+  return /^(?:\[密文\]|\[聊天记录\]|\[转发消息\]|\[暂不支持该消息类型[^\]]*\]|暂不支持该消息类型)/.test(body) ||
     !!record?.elements.some(element => !!element?.arkElement || typeof element?.multiForwardMsgElement?.resId === 'string');
 }
 
@@ -532,7 +532,7 @@ function needsNativeRecord(owner: Element, snapshot: MessageSnapshot): boolean {
   const hasMultiForward = existing?.elements.some(element => typeof element?.multiForwardMsgElement?.resId === 'string') ?? false;
   const identity = hasArk ? findForwardCardIdentity(owner, existing) : null;
   if (hasMultiForward || identity?.resid) return false;
-  return !!snapshot.msgId && (hasArk || hasMultiForward || /^(?:\[聊天记录\]|\[转发消息\]|\[暂不支持该消息类型[^\]]*\]|暂不支持该消息类型)/.test(body));
+  return !!snapshot.msgId && (hasArk || hasMultiForward || /^(?:\[密文\]|\[聊天记录\]|\[转发消息\]|\[暂不支持该消息类型[^\]]*\]|暂不支持该消息类型)/.test(body));
 }
 
 async function resolveRecordForOwner(owner: Element, snapshot: MessageSnapshot): Promise<ResolvedMessageRecord | null> {

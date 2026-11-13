@@ -14,7 +14,6 @@ export interface PgpConfig {
   /** 手动发送的快捷键（如 Ctrl+/、Alt+Q） */
   hotkey: string;
   /** 单条文本切片长度（字符数） */
-  sliceLength: number;
   /** gpg 可执行文件路径，空 = 自动探测 */
   gpgPath: string;
   /** gpg homedir，空 = 系统默认 */
@@ -50,8 +49,6 @@ export interface KeyInfo {
   revoked: boolean;
   /** 是否有私钥 */
   secret: boolean;
-  /** 信任度（gpg --with-colons 的 validity 字段） */
-  validity: string;
   /** 用户 ID 列表 */
   userIds: string[];
   /** 子密钥 */

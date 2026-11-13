@@ -1,8 +1,8 @@
 /** 通过框架的设置扩展注册「PGP 加密」页。 */
 import { log } from './log';
-import { toast } from './input';
+import { toast } from './toast';
 import { loadConfig, saveConfig } from './config-cache';
-import type { KeyBinding, KeyInfo, KeySearchResult, PgpConfig } from '@/shared/types';
+import type { KeyBinding, KeyInfo, PgpConfig } from '@/shared/types';
 
 const NS = 'qwqnt-pgp';
 const settingsKey = Symbol.for('qwqnt-pgp.settings-owner');
@@ -16,7 +16,10 @@ let mountedHost: HTMLElement | null = null;
 let registrationStarted = false;
 let lifecycleObserver: MutationObserver | null = null;
 let config: PgpConfig | null = null;
-interface BindingPageState { cursors: Array<string | undefined>; nextCursor: string | null; request: number; searchUin: string; }
+interface BindingPageState { nextCursor: string | null; request: number; searchUin: string; loading: boolean; }
+const localKeyItems = new WeakMap<HTMLElement, HTMLElement[]>();
+const localKeyRequests = new WeakMap<HTMLElement, number>();
+const bindingSearchTimers = new WeakMap<HTMLElement, number>();
 interface SelectControl { root: HTMLElement; wrapper: HTMLElement; close: () => void; }
 const bindingPages = new WeakMap<HTMLElement, BindingPageState>();
 const selectControls = new Set<SelectControl>();
@@ -24,7 +27,6 @@ const selectControlsByRoot = new WeakMap<HTMLElement, Set<SelectControl>>();
 const keyLabels = new Map<string, string>();
 let unsubscribeBindingChanges: (() => void) | null = null;
 let outsidePointerBound = false;
-let keyMenuCleanup: (() => void) | null = null;
 let settingsAccountEpoch = 0;
 
 function refreshSettingsAccount(): void {
@@ -62,7 +64,6 @@ function cleanupSettingsRoot(root: HTMLElement, discard = true): void {
   }
   unsubscribeBindingChanges?.();
   unsubscribeBindingChanges = null;
-  closeKeyMenu();
   keyLabels.clear();
   if (mountedRoot === root) {
     mountedHost?.replaceChildren();
@@ -75,11 +76,6 @@ function cleanupSettingsRoot(root: HTMLElement, discard = true): void {
     mounted = false;
     config = null;
   }
-}
-
-function closeKeyMenu(): void {
-  keyMenuCleanup?.();
-  keyMenuCleanup = null;
 }
 
 export async function mountSettings(): Promise<void> {
@@ -125,9 +121,15 @@ export async function mountSettings(): Promise<void> {
 
 function observeSettingsLifecycle(): void {
   if (lifecycleObserver || typeof MutationObserver === 'undefined' || !document.documentElement) return;
+  const root = mountedRoot;
+  const entry = root?.querySelector<HTMLElement>(`.qwqnt > .nav-item[data-name="${NS}"]`);
+  const keepEntryLast = (): void => {
+    if (entry?.parentElement && entry.nextElementSibling) entry.parentElement.append(entry);
+  };
+  keepEntryLast();
   lifecycleObserver = new MutationObserver(() => {
-    const root = mountedRoot;
     if (root && !root.isConnected) cleanupSettingsRoot(root);
+    else keepEntryLast();
   });
   lifecycleObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
@@ -175,11 +177,11 @@ function enhanceSelects(root: HTMLElement): void {
         item.setAttribute('aria-selected', String(index === select.selectedIndex));
       }
     };
-    const setActive = (index: number): void => {
+    const setActive = (index: number, showHighlight = true): void => {
       const items = Array.from(list.querySelectorAll<HTMLButtonElement>('.setting-item'));
       if (!items.length) return;
       activeIndex = Math.max(0, Math.min(index, items.length - 1));
-      items.forEach((item, itemIndex) => item.classList.toggle('active', itemIndex === activeIndex));
+      items.forEach((item, itemIndex) => item.classList.toggle('active', showHighlight && itemIndex === activeIndex));
       trigger.setAttribute('aria-activedescendant', items[activeIndex]!.id);
       items[activeIndex]!.scrollIntoView({ block: 'nearest' });
     };
@@ -208,11 +210,11 @@ function enhanceSelects(root: HTMLElement): void {
         list.append(item);
       });
     };
-    const open = (index = select.selectedIndex): void => {
+    const open = (index = select.selectedIndex, showHighlight = false): void => {
       populate();
       list.classList.add('show');
       trigger.setAttribute('aria-expanded', 'true');
-      setActive(index);
+      setActive(index, showHighlight);
     };
     trigger.addEventListener('click', () => {
       if (list.classList.contains('show')) close();
@@ -222,7 +224,7 @@ function enhanceSelects(root: HTMLElement): void {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         const direction = event.key === 'ArrowDown' ? 1 : -1;
-        if (!list.classList.contains('show')) open(Math.max(0, select.selectedIndex + direction));
+        if (!list.classList.contains('show')) open(Math.max(0, select.selectedIndex + direction), true);
         else setActive(activeIndex + direction);
       } else if (event.key === 'Home' || event.key === 'End') {
         if (list.classList.contains('show')) {
@@ -231,7 +233,7 @@ function enhanceSelects(root: HTMLElement): void {
         }
       } else if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        if (!list.classList.contains('show')) open();
+        if (!list.classList.contains('show')) open(select.selectedIndex, true);
         else list.querySelectorAll<HTMLButtonElement>('.setting-item')[activeIndex]?.click();
       } else if (event.key === 'Escape' && list.classList.contains('show')) {
         event.preventDefault();
@@ -260,82 +262,87 @@ function injectStyle(): void {
   style.id = 'qwqnt-pgp-style';
   // 全部走 QQ 自己的 CSS 变量，深浅色主题自动跟随
   style.textContent = `
-  .qwqnt-pgp-sec { margin-bottom: 26px; color: var(--text_primary, inherit); }
-  .qwqnt-pgp-details { margin: 0 0 10px; border: 1px solid var(--border_level_1, rgba(127,127,127,.2)); border-radius: 8px; overflow: visible; }
-  .qwqnt-pgp-details > summary { padding: 10px 12px; cursor: pointer; font-size: 14px; font-weight: 600; list-style-position: inside; }
+  .qwqnt-pgp-sec { margin:0; color:var(--text_primary,inherit); }
+  .qwqnt-pgp-details { margin:0 0 8px; border:1px solid var(--border_level_1,rgba(127,127,127,.2)); border-radius:8px; background-color:var(--fill_light_primary,var(--bg_top_standard,Canvas)); }
+  .qwqnt-pgp-details > summary { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; cursor:pointer; font-size:14px; font-weight:400; list-style:none; }
+  .qwqnt-pgp-details > summary::-webkit-details-marker { display:none; }
+  .qwqnt-pgp-details > summary::after { content:''; width:7px; height:7px; margin-inline-end:3px; border:solid currentColor; border-width:0 1.5px 1.5px 0; opacity:.65; transform:rotate(45deg); }
+  .qwqnt-pgp-details[open] > summary::after { transform:rotate(225deg); }
+  .qwqnt-pgp-details[open] > summary { border-bottom:1px solid var(--border_level_1,rgba(127,127,127,.16)); }
   .qwqnt-pgp-details > summary:focus-visible { outline: 2px solid var(--brand_standard, #0099ff); outline-offset: -2px; border-radius: 8px; }
-  .qwqnt-pgp-details-body { padding: 0 12px 12px; }
+  .qwqnt-pgp-details-body { padding:4px 12px 6px; }
   .qwqnt-pgp-row { display: flex; align-items: center; gap: 10px; min-height: 34px; margin: 6px 0; }
+  .qwqnt-pgp-details-body > .qwqnt-pgp-row:first-child { margin-top:0; }
+  .qwqnt-pgp-details-body > .qwqnt-pgp-row:last-child,
+  .qwqnt-pgp-details-body > .qwqnt-pgp-row:has(+ .qwqnt-pgp-hint:empty:last-child) { margin-bottom:0; }
+  .qwqnt-pgp-details-body > .qwqnt-pgp-row + .qwqnt-pgp-row,
+  .qwqnt-pgp-details-body > .qwqnt-pgp-test-field + .qwqnt-pgp-row,
+  .qwqnt-pgp-details-body > .qwqnt-pgp-row + .qwqnt-pgp-test-field { border-top:1px solid rgba(127,127,127,.15); padding-top:6px; }
   .qwqnt-pgp-row > label { width: 150px; flex: none; opacity: .85; font-size: 13px; }
   .qwqnt-pgp-row input[type=text], .qwqnt-pgp-row input[type=password], .qwqnt-pgp-row input[type=number], .qwqnt-pgp-row select, .qwqnt-pgp-field {
     flex: 1; min-width: 160px; padding: 5px 8px; border-radius: 6px;
     border: 1px solid var(--border_level_2, rgba(127,127,127,.35));
-    background: var(--bg_bottom_standard, transparent);
+    background: rgba(127,127,127,.10);
     color: var(--text_primary, inherit); font-size: 13px; outline: none;
   }
-  .qwqnt-pgp-row input:focus, .qwqnt-pgp-row select:focus, .qwqnt-pgp-field:focus { border-color: var(--brand_standard, #0099ff); }
-  .qwqnt-pgp-setting-select { position:relative; flex:1; width:100%; min-width:0; height:28px; }
-  .qwqnt-pgp-native-select { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
-  .qwqnt-pgp-setting-select .setting-view { box-sizing:border-box; display:flex; align-items:center; width:100%; height:28px; padding:0 30px 0 8px; border:1px solid rgba(127,127,127,.2); border-radius:4px; background-color:var(--overlay_active,var(--bg_bottom_standard,transparent)); color:var(--text_primary,inherit); text-align:left; font:inherit; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-  .qwqnt-pgp-setting-select .setting-view::after { content:''; position:absolute; right:11px; top:9px; width:7px; height:7px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.68; }
-  .qwqnt-pgp-setting-select .setting-view:focus-visible { outline:2px solid var(--brand_standard,#0099ff); outline-offset:1px; }
-  .qwqnt-pgp-setting-select .setting-option { position:absolute; top:calc(100% + 6px); left:-1px; width:calc(100% + 2px); max-height:410px; overflow:auto; border-radius:6px; padding:6px; z-index:100; box-shadow:0 4px 20px rgba(0,0,0,.15); background:var(--bg_top_standard,var(--bg_bottom_standard,#fff)); color:var(--text_primary,inherit); opacity:0; transform:translateY(-6px); pointer-events:none; transition:150ms; }
-  .qwqnt-pgp-setting-select .setting-option.show { opacity:1; transform:translateY(0); pointer-events:auto; }
-  .qwqnt-pgp-setting-select .setting-item { display:block; width:100%; box-sizing:border-box; padding:0 6px; border:0; border-radius:4px; background:transparent; color:inherit; text-align:left; font-size:12px; line-height:26px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-  .qwqnt-pgp-setting-select .setting-item:hover, .qwqnt-pgp-setting-select .setting-item.active { background:var(--bg_float,rgba(127,127,127,.12)); }
-  .qwqnt-pgp-setting-select .setting-item[aria-selected=true] { font-weight:600; }
-  .qwqnt-pgp-btn {
-    padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
-    border: 1px solid var(--border_level_2, rgba(127,127,127,.35));
-    background: var(--bg_bottom_standard, transparent); color: var(--text_primary, inherit);
+  .qwqnt-pgp-sec :is(input[type=text], input[type=password], input[type=number], textarea.qwqnt-pgp-tea):focus {
+    border-color:var(--brand_standard,#0099ff);
+    outline:2px solid var(--brand_standard,#0099ff);
+    outline-offset:-2px;
   }
-  .qwqnt-pgp-btn:hover:not(:disabled) { background: var(--bg_float, rgba(127,127,127,.12)); }
-  .qwqnt-pgp-btn:disabled { opacity: .45; cursor: default; }
-  .qwqnt-pgp-btn.primary { background: var(--brand_standard, #0099ff); border-color: transparent; color: var(--on_brand_primary, #fff); }
-  .qwqnt-pgp-btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .qwqnt-pgp-setting-select { position:relative; flex:0 1 120px; width:120px; min-width:0; height:26px; margin-inline-start:auto; --qwqnt-pgp-select-bg:#fff; }
+  .qwqnt-pgp-native-select { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
+  .qwqnt-pgp-setting-select .setting-view { box-sizing:border-box; display:block; width:100%; height:100%; padding:0 24px 0 8px; border:1px solid rgba(127,127,127,.2); border-radius:4px; background:transparent; color:var(--text_primary,inherit); text-align:left; font:inherit; font-weight:400; font-size:12px; line-height:24px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .qwqnt-pgp-setting-select .setting-view::after { content:''; position:absolute; right:10px; top:50%; width:7px; height:7px; border-right:1px solid currentColor; border-bottom:1px solid currentColor; transform:translateY(-65%) rotate(45deg); }
+  .qwqnt-pgp-setting-select .setting-view:hover { border-color:rgba(127,127,127,.4); }
+  .qwqnt-pgp-setting-select .setting-view:focus-visible { outline:2px solid var(--brand_standard,#0099ff); outline-offset:1px; }
+  .qwqnt-pgp-setting-select .setting-option { position:absolute; top:calc(100% + 6px); left:0; box-sizing:border-box; width:100%; max-height:410px; overflow:auto; border-radius:6px; padding:6px; z-index:100; box-shadow:0 4px 20px rgba(0,0,0,.15); background:var(--qwqnt-pgp-select-bg); color:var(--text_primary,inherit); opacity:0; transform:translateY(-6px); pointer-events:none; transition:150ms; }
+  @media (prefers-color-scheme: dark) {
+    .qwqnt-pgp-setting-select { --qwqnt-pgp-select-bg:#303030; }
+  }
+  .qwqnt-pgp-setting-select .setting-option.show { opacity:1; transform:translateY(0); pointer-events:auto; }
+  .qwqnt-pgp-setting-select .setting-item { display:block; width:100%; box-sizing:border-box; padding:0 6px; border:0; border-radius:4px; background:transparent; color:inherit; text-align:left; font:inherit; font-size:12px; font-weight:400; line-height:26px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .qwqnt-pgp-setting-select .setting-item:hover, .qwqnt-pgp-setting-select .setting-item.active { background:var(--bg_float,rgba(127,127,127,.12)); }
+  .qwqnt-pgp-sec button.q-button.q-button--small { box-sizing:border-box; min-width:0; min-height:0; height:24px; padding:0 8px; border-radius:4px; font-size:12px; font-weight:400; line-height:normal; white-space:nowrap; }
   .qwqnt-pgp-bool { display:flex; align-items:center; justify-content:space-between; }
   .qwqnt-pgp-switch-input { position:absolute !important; width:1px !important; height:1px !important; margin:-1px !important; padding:0 !important; overflow:hidden !important; clip:rect(0,0,0,0) !important; white-space:nowrap !important; border:0 !important; }
-  .qwqnt-pgp-switch { position:relative; flex:none; width:38px; height:22px; padding:0; border:0; border-radius:999px; background:var(--fill_tertiary,rgba(127,127,127,.36)); cursor:pointer; transition:background .16s ease; }
-  .qwqnt-pgp-switch[aria-checked=true] { background:var(--brand_standard,#0099ff); }
-  .qwqnt-pgp-switch::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:var(--bg_bottom_standard,#fff); box-shadow:0 1px 2px rgba(0,0,0,.2); transition:transform .16s ease; }
-  .qwqnt-pgp-switch[aria-checked=true]::after { transform:translateX(16px); }
   .qwqnt-pgp-switch:focus-visible { outline:2px solid var(--brand_standard,#0099ff); outline-offset:2px; }
   .qwqnt-pgp-list { border: 1px solid var(--border_level_1, rgba(127,127,127,.22)); border-radius: 8px; overflow: hidden; }
   .qwqnt-pgp-item { padding: 9px 12px; border-top: 1px solid var(--border_level_1, rgba(127,127,127,.16)); font-size: 13px; }
   .qwqnt-pgp-item:first-child { border-top: 0; }
   .qwqnt-pgp-item .meta { opacity: .62; font-size: 12px; margin-top: 3px; word-break: break-all; }
-  .qwqnt-pgp-item .ops { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
   .qwqnt-pgp-hint { font-size: 12px; opacity: .6; margin: 6px 0 0; }
-  .qwqnt-pgp-pre {
-    white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; font-size: 12px; margin: 8px 0 0;
-    padding: 8px; border-radius: 6px; background: var(--bg_bottom_standard, rgba(127,127,127,.08));
-    border: 1px solid var(--border_level_1, rgba(127,127,127,.22));
-  }
-  .qwqnt-pgp-tea { flex: 1; min-height: 90px; resize: vertical; padding: 8px; border-radius: 6px;
+  .qwqnt-pgp-hint:empty { margin:0; }
+  .qwqnt-pgp-tea { display:block; box-sizing:border-box; width:100%; height:96px; resize:none; overflow:auto; padding:8px; border-radius:6px;
     border: 1px solid var(--border_level_2, rgba(127,127,127,.35));
-    background: var(--bg_bottom_standard, transparent); color: var(--text_primary, inherit);
+    background: rgba(127,127,127,.10); color: var(--text_primary, inherit);
     font-size: 13px; font-family: inherit; outline: none; }
-  .qwqnt-pgp-tea:focus { border-color: var(--brand_standard, #0099ff); }
-  .qwqnt-pgp-bindRow { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
-  .qwqnt-pgp-bindRow > span { flex: none; opacity: .75; }
-  .qwqnt-pgp-bindRow input { flex: 1; min-width: 120px; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--border_level_1, rgba(127,127,127,.35)); background: transparent; color: inherit; font-size: 12px; }
+  #qwqnt-pgp-testCipher { height:132px; }
+  .qwqnt-pgp-contact-panel { display:grid; gap:8px; min-width:0; }
+  .qwqnt-pgp-contact-scroll { overflow-y:auto; overscroll-behavior-y:auto; scrollbar-gutter:stable; }
+  .qwqnt-pgp-contact-scroll:focus-visible { outline:2px solid var(--brand_standard,#0099ff); outline-offset:-2px; }
+  #qwqnt-pgp-keyList { max-height:calc(5 * 94px); }
+  #qwqnt-pgp-keyList > .qwqnt-pgp-item:has(.qwqnt-pgp-bindRow) { box-sizing:border-box; block-size:94px; overflow:auto; }
+  #qwqnt-pgp-binding-list { max-height:calc(5 * 42px); }
+  #qwqnt-pgp-binding-list > .qwqnt-pgp-binding-row { box-sizing:border-box; block-size:42px; }
+  .qwqnt-pgp-network-github { margin-top:12px; padding-top:12px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); }
+  .qwqnt-pgp-contact-header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .qwqnt-pgp-contact-header input { min-width:0; }
+  .qwqnt-pgp-contact-header .q-button { flex:none; }
+  .qwqnt-pgp-contact-panel > input { box-sizing:border-box; width:100%; min-width:0; }
+  .qwqnt-pgp-sec .qwqnt-pgp-contact-panel input.qwqnt-pgp-field:focus {
+    border:1px solid var(--brand_standard,#0099ff) !important;
+    box-shadow:inset 0 0 0 1px var(--brand_standard,#0099ff) !important;
+  }
+  .qwqnt-pgp-contact-panel .qwqnt-pgp-item { overflow-wrap:anywhere; }
+  .qwqnt-pgp-bindRow { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  .qwqnt-pgp-bindRow input { min-width:0; }
+  .qwqnt-pgp-bindRow button { flex:none; }
   .qwqnt-pgp-key-mine { color:var(--brand_standard,#0099ff); }
-  .qwqnt-pgp-key-danger { color:var(--text_error,var(--text_danger,#e55353)); }
-  .qwqnt-pgp-bind-pages { justify-content:flex-end; }
-  .qwqnt-pgp-bind-pages > span { flex:1; font-size:12px; opacity:.72; }
-  .qwqnt-pgp-bind-search-results { margin:4px 0 8px; font-size:12px; }
   .qwqnt-pgp-binding-row { display:flex; align-items:center; gap:8px; min-width:0; padding:7px 10px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); font-size:12px; }
   .qwqnt-pgp-binding-row:first-child { border-top:0; }
   .qwqnt-pgp-binding-row .binding-uin { flex:none; font-variant-numeric:tabular-nums; }
   .qwqnt-pgp-binding-row .binding-key { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.75; }
-  .qwqnt-pgp-bindInput { min-width:100px; }
-  .qwqnt-pgp-menu { display: flex; flex-direction: column; gap: 2px; min-width: 180px; padding: 6px; border-radius: 8px;
-    border: 1px solid var(--border_level_2, rgba(127,127,127,.3));
-    background: var(--bg_top_standard, var(--bg_bottom_standard, var(--bg_float, #2e2e2e)));
-    color: var(--text_primary, inherit);
-    box-shadow: 0 8px 24px rgba(0,0,0,.28); }
-  .qwqnt-pgp-menu .qwqnt-pgp-btn { text-align: left; border: none; background: transparent; padding: 6px 10px; }
-  .qwqnt-pgp-menu .qwqnt-pgp-btn:hover { background: var(--bg_bottom_standard, rgba(127,127,127,.12)); }
   `;
   document.head.append(style);
 }
@@ -349,19 +356,16 @@ function renderConfigSection(): HTMLElement {
   sec.innerHTML = `
     <details class="qwqnt-pgp-details" open>
       <summary>基本设置</summary><div class="qwqnt-pgp-details-body">
-        <div class="qwqnt-pgp-row qwqnt-pgp-bool"><label for="qwqnt-pgp-autoDecrypt-switch">自动解密</label><input id="qwqnt-pgp-autoDecrypt" class="qwqnt-pgp-switch-input" type="checkbox" aria-hidden="true" tabindex="-1" ${cfg.autoDecrypt ? 'checked' : ''}><button id="qwqnt-pgp-autoDecrypt-switch" class="qwqnt-pgp-switch" type="button" role="switch" aria-label="自动解密" aria-checked="${cfg.autoDecrypt}"></button></div>
+        <div class="qwqnt-pgp-row qwqnt-pgp-bool"><label id="qwqnt-pgp-autoDecrypt-label">自动解密</label><input id="qwqnt-pgp-autoDecrypt" class="qwqnt-pgp-switch-input" type="checkbox" aria-hidden="true" tabindex="-1" ${cfg.autoDecrypt ? 'checked' : ''}><div id="qwqnt-pgp-autoDecrypt-switch" class="q-switch qwqnt-pgp-switch${cfg.autoDecrypt ? ' is-active' : ''}" role="switch" tabindex="0" aria-labelledby="qwqnt-pgp-autoDecrypt-label" aria-checked="${cfg.autoDecrypt}"><span class="q-switch__handle"></span></div></div>
         <div class="qwqnt-pgp-row"><label>发送策略</label><select id="qwqnt-pgp-sendPolicy" class="qwqnt-pgp-select">
           <option value="manual" ${cfg.sendPolicy === 'manual' ? 'selected' : ''}>快捷键手动加密</option><option value="auto" ${cfg.sendPolicy === 'auto' ? 'selected' : ''}>发送时自动加密</option><option value="off" ${cfg.sendPolicy === 'off' ? 'selected' : ''}>不加密</option>
         </select></div>
-        <div class="qwqnt-pgp-row"><label>加密快捷键</label><input id="qwqnt-pgp-hotkey" type="text" readonly placeholder="按组合键" value="${escapeAttr(cfg.hotkey)}"><button class="qwqnt-pgp-btn" id="qwqnt-pgp-hotkeyReset">重置</button></div>
+        <div class="qwqnt-pgp-row"><label>加密快捷键</label><input id="qwqnt-pgp-hotkey" type="text" readonly placeholder="按组合键" value="${escapeAttr(cfg.hotkey)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-hotkeyReset">重置</button></div>
         <div class="qwqnt-pgp-hint" id="qwqnt-pgp-saveState" role="status"></div>
       </div>
     </details>
-    <details class="qwqnt-pgp-details"><summary>高级设置</summary><div class="qwqnt-pgp-details-body">
-      <div class="qwqnt-pgp-row"><label>切片长度</label><input id="qwqnt-pgp-sliceLength" type="number" min="200" step="100" value="${cfg.sliceLength}"></div>
-    </div></details>
     <details class="qwqnt-pgp-details"><summary>GnuPG</summary><div class="qwqnt-pgp-details-body">
-      <div class="qwqnt-pgp-row"><label>gpg 路径</label><input id="qwqnt-pgp-gpgPath" type="text" placeholder="自动探测" value="${escapeAttr(cfg.gpgPath)}"><button class="qwqnt-pgp-btn" id="qwqnt-pgp-detect">检测</button></div>
+      <div class="qwqnt-pgp-row"><label>gpg 路径</label><input id="qwqnt-pgp-gpgPath" type="text" placeholder="自动探测" value="${escapeAttr(cfg.gpgPath)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-detect">检测</button></div>
       <div class="qwqnt-pgp-row"><label>钥匙串目录</label><input id="qwqnt-pgp-gpgHome" type="text" placeholder="使用默认目录" value="${escapeAttr(cfg.gpgHome)}"></div>
       <div class="qwqnt-pgp-hint" id="qwqnt-pgp-gpgStatus" role="status"></div>
     </div></details>
@@ -409,7 +413,6 @@ function renderConfigSection(): HTMLElement {
     autoDecrypt: get<HTMLInputElement>('qwqnt-pgp-autoDecrypt').checked,
     sendPolicy: get<HTMLSelectElement>('qwqnt-pgp-sendPolicy').value as PgpConfig['sendPolicy'],
     hotkey: get<HTMLInputElement>('qwqnt-pgp-hotkey').value.trim() || 'Ctrl+/',
-    sliceLength: Number(get<HTMLInputElement>('qwqnt-pgp-sliceLength').value) || 3000,
     gpgPath: get<HTMLInputElement>('qwqnt-pgp-gpgPath').value.trim(),
     gpgHome: get<HTMLInputElement>('qwqnt-pgp-gpgHome').value.trim()
   });
@@ -418,12 +421,7 @@ function renderConfigSection(): HTMLElement {
     const state = document.getElementById('qwqnt-pgp-saveState');
     try {
       config = await saveConfig(collect());
-      if (state) {
-        state.textContent = '已自动保存';
-        window.setTimeout(() => {
-          if (state.textContent === '已自动保存') state.textContent = '';
-        }, 2000);
-      }
+      if (state) state.textContent = '';
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (state) state.textContent = `保存失败：${msg}`;
@@ -434,9 +432,10 @@ function renderConfigSection(): HTMLElement {
     el.addEventListener('change', () => void autoSave());
   }
   const autoDecrypt = get<HTMLInputElement>('qwqnt-pgp-autoDecrypt');
-  const autoDecryptSwitch = get<HTMLButtonElement>('qwqnt-pgp-autoDecrypt-switch');
+  const autoDecryptSwitch = get('qwqnt-pgp-autoDecrypt-switch');
   const toggleAutoDecrypt = (): void => {
     autoDecrypt.checked = !autoDecrypt.checked;
+    autoDecryptSwitch.classList.toggle('is-active', autoDecrypt.checked);
     autoDecryptSwitch.setAttribute('aria-checked', String(autoDecrypt.checked));
     autoDecrypt.dispatchEvent(new Event('change', { bubbles: true }));
   };
@@ -456,49 +455,87 @@ function renderContactsSection(): HTMLElement {
   const sec = document.createElement('section');
   sec.className = 'qwqnt-pgp-sec';
   sec.innerHTML = `
-    <details class="qwqnt-pgp-details" open><summary>钥匙串与联系人</summary><div class="qwqnt-pgp-details-body">
-      <div class="qwqnt-pgp-row"><button class="qwqnt-pgp-btn" id="qwqnt-pgp-refreshKeys">刷新本地密钥</button><span class="qwqnt-pgp-hint" id="qwqnt-pgp-keyState" role="status"></span></div>
-      <div class="qwqnt-pgp-bind-directory">
-        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-binding-search">按 QQ 号查询绑定</label><input id="qwqnt-pgp-binding-search" type="text" inputmode="numeric" placeholder="输入数字 QQ 号"><button class="qwqnt-pgp-btn" id="qwqnt-pgp-binding-search-button">查询</button></div>
-        <div class="qwqnt-pgp-bind-search-results" id="qwqnt-pgp-bind-search-results" role="status"></div>
-        <div class="qwqnt-pgp-row qwqnt-pgp-bind-pages"><span id="qwqnt-pgp-bind-page-status" aria-live="polite"></span><button class="qwqnt-pgp-btn" id="qwqnt-pgp-bind-prev" type="button">上一页</button><button class="qwqnt-pgp-btn" id="qwqnt-pgp-bind-next" type="button">下一页</button></div>
-        <div class="qwqnt-pgp-list" id="qwqnt-pgp-binding-list"><div class="qwqnt-pgp-item">加载绑定…</div></div>
+    <details class="qwqnt-pgp-details" open><summary>本机公钥</summary><div class="qwqnt-pgp-details-body">
+      <div class="qwqnt-pgp-contact-panel">
+        <div class="qwqnt-pgp-contact-header">
+          <input class="qwqnt-pgp-field" id="qwqnt-pgp-local-search" type="text" aria-label="筛选本机公钥" placeholder="筛选公钥">
+          <button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-refreshKeys" type="button">刷新</button>
+        </div>
+        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-keyList" tabindex="0" aria-label="本机公钥列表"><div class="qwqnt-pgp-item">加载中</div></div>
+        <span class="qwqnt-pgp-hint" id="qwqnt-pgp-keyState" role="status"></span>
       </div>
-      <div class="qwqnt-pgp-list" id="qwqnt-pgp-keyList"><div class="qwqnt-pgp-item">加载中</div></div>
+    </div></details>
+    <details class="qwqnt-pgp-details" open><summary>已绑定 QQ 号</summary><div class="qwqnt-pgp-details-body">
+      <div class="qwqnt-pgp-contact-panel">
+        <input class="qwqnt-pgp-field" id="qwqnt-pgp-binding-search" type="text" inputmode="numeric" aria-label="筛选已绑定 QQ 号" placeholder="筛选 QQ 号">
+        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-binding-list" tabindex="0" aria-label="已绑定 QQ 号列表"><div class="qwqnt-pgp-item">加载绑定…</div></div>
+      </div>
     </div></details>
     <details class="qwqnt-pgp-details"><summary>网络获取</summary><div class="qwqnt-pgp-details-body">
       <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-keyserver">密钥服务器</label><input id="qwqnt-pgp-keyserver" type="text" value="${escapeAttr(config!.keyserver)}"></div>
-      <div class="qwqnt-pgp-row"><input id="qwqnt-pgp-searchInput" type="text" placeholder="邮箱、名字、keyID 或 GitHub 用户名"><button class="qwqnt-pgp-btn" id="qwqnt-pgp-searchKs">搜索密钥服务器</button><button class="qwqnt-pgp-btn" id="qwqnt-pgp-searchGh">GitHub 搜索</button></div>
-      <div class="qwqnt-pgp-list" id="qwqnt-pgp-searchList"></div>
+      <form class="qwqnt-pgp-row" id="qwqnt-pgp-keyserver-search"><input type="text" aria-label="搜索密钥服务器" required placeholder="邮箱或指纹"><button class="q-button q-button--small q-button--secondary" type="submit">搜索</button></form>
+      <div id="qwqnt-pgp-keyserver-results"></div>
+    <div class="qwqnt-pgp-network-github">
+      <div>GitHub 公钥</div>
+      <form class="qwqnt-pgp-row" id="qwqnt-pgp-github-search"><input type="text" aria-label="GitHub 用户名" required placeholder="用户名"><button class="q-button q-button--small q-button--secondary" type="submit">搜索</button></form>
+      <div id="qwqnt-pgp-github-results"></div>
+    </div>
     </div></details>
   `;
   const q = <T extends HTMLElement>(id: string) => sec.querySelector<T>(`#${id}`)!;
 
   q('qwqnt-pgp-refreshKeys').addEventListener('click', () => void refreshKeys(sec));
-  const bindingState: BindingPageState = { cursors: [undefined], nextCursor: null, request: 0, searchUin: '' };
+  const bindingState: BindingPageState = { nextCursor: null, request: 0, loading: false, searchUin: '' };
   bindingPages.set(sec, bindingState);
-  q('qwqnt-pgp-binding-search-button').addEventListener('click', () => void searchBinding(sec));
-  q<HTMLInputElement>('qwqnt-pgp-binding-search').addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); void searchBinding(sec); }
+  q<HTMLInputElement>('qwqnt-pgp-binding-search').addEventListener('input', event => {
+    const input = event.currentTarget as HTMLInputElement;
+    const digits = input.value.replace(/\D/g, '');
+    if (input.value !== digits) {
+      const caret = input.value.slice(0, input.selectionStart ?? input.value.length).replace(/\D/g, '').length;
+      input.value = digits;
+      input.setSelectionRange(caret, caret);
+    }
+    if (bindingState.searchUin === digits) return;
+    bindingState.searchUin = digits;
+    bindingState.nextCursor = null;
+    bindingState.request++;
+    const previous = bindingSearchTimers.get(sec);
+    if (previous) window.clearTimeout(previous);
+    bindingSearchTimers.set(sec, window.setTimeout(() => void refreshBindingPage(sec), 300));
   });
-  q('qwqnt-pgp-bind-prev').addEventListener('click', () => {
-    if (bindingState.cursors.length < 2) return;
-    bindingState.cursors.pop();
-    void refreshBindingPage(sec);
-  });
-  q('qwqnt-pgp-bind-next').addEventListener('click', () => {
-    if (!bindingState.nextCursor) return;
-    bindingState.cursors.push(bindingState.nextCursor);
-    void refreshBindingPage(sec);
+  q<HTMLInputElement>('qwqnt-pgp-local-search').addEventListener('input', () => filterLocalKeys(sec));
+  const bindingList = q('qwqnt-pgp-binding-list');
+  bindingList.addEventListener('scroll', () => {
+    if (bindingState.nextCursor && !bindingState.loading &&
+        bindingList.scrollHeight - bindingList.scrollTop - bindingList.clientHeight <= 42) {
+      void refreshBindingPage(sec, true);
+    }
   });
   unsubscribeBindingChanges?.();
   unsubscribeBindingChanges = window.QwQNTPgp.onDataChanged(change => {
     if (change.kind !== 'binding') return;
     void refreshBindingPage(sec);
-    if (bindingState.searchUin === change.id) void searchBinding(sec, false);
   });
-  q('qwqnt-pgp-searchKs').addEventListener('click', () => void doSearch(sec, 'keyserver'));
-  q('qwqnt-pgp-searchGh').addEventListener('click', () => void doSearch(sec, 'github'));
+  const server = q<HTMLInputElement>('qwqnt-pgp-keyserver');
+  for (const source of ['keyserver', 'github'] as const) {
+    const form = q<HTMLFormElement>(`qwqnt-pgp-${source}-search`);
+    const input = form.querySelector<HTMLInputElement>('input')!;
+    const submit = form.querySelector<HTMLButtonElement>('button')!;
+    const results = q(`qwqnt-pgp-${source}-results`);
+    let revision = 0;
+    const clear = (): void => { revision++; results.replaceChildren(); };
+    input.addEventListener('input', clear);
+    if (source === 'keyserver') server.addEventListener('input', clear);
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const query = input.value.trim();
+      if (submit.disabled || !query) return;
+      const request = ++revision;
+      submit.disabled = true;
+      void doSearch(sec, results, query, source, server.value.trim() || 'keys.openpgp.org',
+        () => sec.isConnected && request === revision).finally(() => { submit.disabled = false; });
+    });
+  }
   q<HTMLInputElement>('qwqnt-pgp-keyserver').addEventListener('change', async e => {
     try { config = await saveConfig({ keyserver: (e.currentTarget as HTMLInputElement).value.trim() || 'keys.openpgp.org' }); }
     catch (err) { toast(`保存失败：${err instanceof Error ? err.message : String(err)}`); }
@@ -516,57 +553,35 @@ async function listAllKeys(): Promise<KeyInfo[]> {
   return [...secs, ...pubs.filter(p => !secs.some(s => s.fingerprint === p.fingerprint))];
 }
 
-async function refreshBindingPage(sec: HTMLElement): Promise<void> {
+async function refreshBindingPage(sec: HTMLElement, append = false): Promise<void> {
   const state = bindingPages.get(sec);
   const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-binding-list');
-  const status = sec.querySelector<HTMLElement>('#qwqnt-pgp-bind-page-status');
-  const prev = sec.querySelector<HTMLButtonElement>('#qwqnt-pgp-bind-prev');
-  const next = sec.querySelector<HTMLButtonElement>('#qwqnt-pgp-bind-next');
-  if (!state || !list || !status || !prev || !next) return;
+  if (!state || !list) return;
+  const cursor = append ? state.nextCursor : null;
   const request = ++state.request;
-  list.innerHTML = '<div class="qwqnt-pgp-item">加载绑定…</div>';
-  prev.disabled = next.disabled = true;
+  state.loading = true;
+  state.nextCursor = null;
+  if (!append) list.innerHTML = '<div class="qwqnt-pgp-item">加载绑定…</div>';
   try {
-    const result = await window.QwQNTPgp.listKeyBindings(state.cursors[state.cursors.length - 1], 50);
+    const query = state.searchUin || undefined;
+    const result = await window.QwQNTPgp.listKeyBindings(cursor ?? undefined, 50, query);
     if (request !== state.request) return;
     state.nextCursor = result.nextCursor;
-    list.replaceChildren();
-    if (!result.items.length) list.innerHTML = '<div class="qwqnt-pgp-item">暂无联系人绑定</div>';
-    else for (const binding of result.items) list.append(renderBindingRow(sec, binding));
-    status.textContent = `第 ${state.cursors.length} 页 · ${result.items.length} 条`;
-    prev.disabled = state.cursors.length <= 1;
-    next.disabled = !state.nextCursor;
+    if (!append) {
+      list.replaceChildren();
+      if (!result.items.length) list.textContent = query ? '没有匹配的 QQ 号' : '暂无联系人绑定';
+    }
+    for (const binding of result.items) list.append(renderBindingRow(sec, binding));
   } catch (error) {
     if (request !== state.request) return;
-    list.innerHTML = `<div class="qwqnt-pgp-item">读取绑定失败：${escapeHtml(String(error instanceof Error ? error.message : error))}</div>`;
-    status.textContent = '';
-    prev.disabled = next.disabled = true;
-  }
-}
-
-async function searchBinding(sec: HTMLElement, updateSearch = true): Promise<void> {
-  const state = bindingPages.get(sec);
-  const input = sec.querySelector<HTMLInputElement>('#qwqnt-pgp-binding-search');
-  const result = sec.querySelector<HTMLElement>('#qwqnt-pgp-bind-search-results');
-  if (!state || !input || !result) return;
-  const uin = updateSearch ? input.value.trim() : state.searchUin;
-  if (!isValidUin(uin)) {
-    result.textContent = '请输入有效的数字 QQ 号';
-    return;
-  }
-  if (updateSearch) state.searchUin = uin;
-  result.textContent = '查询中…';
-  try {
-    const bindings = await window.QwQNTPgp.getKeyBindings([uin]);
-    if (state.searchUin !== uin) return;
-    result.replaceChildren();
-    if (!bindings.length) {
-      result.textContent = `${uin} 暂无绑定公钥`;
-      return;
+    if (append) {
+      state.nextCursor = cursor;
+      toast('读取更多绑定失败');
+    } else {
+      list.textContent = `读取绑定失败：${error instanceof Error ? error.message : String(error)}`;
     }
-    result.append(...bindings.map(binding => renderBindingRow(sec, binding)));
-  } catch (error) {
-    result.textContent = `查询失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    if (request === state.request) state.loading = false;
   }
 }
 
@@ -580,7 +595,7 @@ function renderBindingRow(sec: HTMLElement, binding: KeyBinding): HTMLElement {
   key.className = 'binding-key';
   key.textContent = keyLabels.get(binding.keyID) ?? binding.keyID;
   const remove = document.createElement('button');
-  remove.className = 'qwqnt-pgp-btn';
+  remove.className = 'q-button q-button--small q-button--secondary';
   remove.type = 'button';
   remove.textContent = '解绑';
   remove.addEventListener('click', async () => {
@@ -588,8 +603,6 @@ function renderBindingRow(sec: HTMLElement, binding: KeyBinding): HTMLElement {
     try {
       await window.QwQNTPgp.setKeyBinding(binding.uin, null);
       await refreshBindingPage(sec);
-      const state = bindingPages.get(sec);
-      if (state?.searchUin === binding.uin) await searchBinding(sec, false);
     } catch (error) {
       remove.disabled = false;
       toast(`解绑失败：${error instanceof Error ? error.message : String(error)}`);
@@ -600,13 +613,17 @@ function renderBindingRow(sec: HTMLElement, binding: KeyBinding): HTMLElement {
 }
 
 async function refreshKeys(sec: HTMLElement): Promise<void> {
+  const request = (localKeyRequests.get(sec) ?? 0) + 1;
+  localKeyRequests.set(sec, request);
   const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-keyList')!;
   const state = sec.querySelector<HTMLElement>('#qwqnt-pgp-keyState')!;
   list.innerHTML = '<div class="qwqnt-pgp-item">加载中…</div>';
   try {
     // Display public keys while marking whether each has a matching local secret key.
     const { public: pubs, secret: secs } = await window.QwQNTPgp.listKeys();
-          config = await loadConfig(true);
+    if (localKeyRequests.get(sec) !== request) return;
+    config = await loadConfig(true);
+    if (localKeyRequests.get(sec) !== request) return;
     const secretFprs = new Set(secs.map(s => s.fingerprint));
     const localPubs = pubs.map(key => ({ ...key, secret: secretFprs.has(key.fingerprint) }));
     keyLabels.clear();
@@ -628,17 +645,31 @@ async function refreshKeys(sec: HTMLElement): Promise<void> {
     }
     const activeOwn = secretPubs.find(key => matchesKeyID(key, config?.ownKeyID ?? ''));
     if (pubs.length === 0) {
+      localKeyItems.set(sec, []);
       list.innerHTML = '<div class="qwqnt-pgp-item">本地没有公钥</div>';
       return;
     }
-    list.innerHTML = '';
     const ordered = [...localPubs].sort((a, b) => Number(matchesKeyID(b, activeOwn?.keyID ?? '')) - Number(matchesKeyID(a, activeOwn?.keyID ?? '')));
-    for (const key of ordered) list.append(renderKeyItem(key, sec));
+    localKeyItems.set(sec, ordered.map(key => renderKeyItem(key, sec)));
+    filterLocalKeys(sec);
     void refreshBindingPage(sec);
     if (!state.textContent.startsWith('保存默认密钥失败')) state.textContent = `${pubs.length} 个公钥`;
   } catch (err) {
+    if (localKeyRequests.get(sec) !== request) return;
     list.innerHTML = `<div class="qwqnt-pgp-item">加载失败：${escapeHtml(String(err instanceof Error ? err.message : err))}</div>`;
   }
+}
+
+function filterLocalKeys(sec: HTMLElement): void {
+  const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-keyList');
+  const input = sec.querySelector<HTMLInputElement>('#qwqnt-pgp-local-search');
+  const items = localKeyItems.get(sec);
+  if (!list || !items) return;
+  const query = input?.value.trim().toLocaleLowerCase() ?? '';
+  const matching = items.filter(item => !query || (item.dataset.search ?? '').includes(query));
+  list.replaceChildren();
+  if (!matching.length) list.innerHTML = '<div class="qwqnt-pgp-item">没有匹配的本机公钥</div>';
+  else list.append(...matching);
 }
 
 function matchesKeyID(key: KeyInfo, keyID: string): boolean {
@@ -652,19 +683,16 @@ function isUsableOwnKey(key: KeyInfo): boolean {
 function renderKeyItem(k: KeyInfo, sec: HTMLElement): HTMLElement {
   const item = document.createElement('div');
   item.className = 'qwqnt-pgp-item';
-  const trustMap: Record<string, string> = {
-    u: '已信任', f: '完全信任', m: '边际信任', n: '不信任', q: '未验证', '-': '未设置', e: '已过期', r: '已吊销'
-  };
+  item.dataset.search = [k.userIds.join(' '), k.keyID, k.fingerprint].join(' ').toLocaleLowerCase();
   const mine = isUsableOwnKey(k) && matchesKeyID(k, config?.ownKeyID ?? '');
   item.innerHTML = `
     <div><b>${escapeHtml(k.userIds[0] ?? '(无 UID)')}</b>${mine ? ' <span class="qwqnt-pgp-key-mine">[我的公钥]</span>' : ''}</div>
-    <div class="meta">${escapeHtml(k.keyID)} · ${escapeHtml(k.algo)} ${k.bits || ''}位 · 信任：${escapeHtml(trustMap[k.validity] ?? k.validity)}${k.expires ? ` · 过期：${fmtDate(k.expires)}` : ''}</div>
-    <div class="qwqnt-pgp-bindRow"><span>绑定 QQ 号</span>
-      <input type="text" class="qwqnt-pgp-bindInput" placeholder="输入 QQ 号（最多 512 个），逗号分隔">
-      <button type="button" class="qwqnt-pgp-btn" data-act="bind">绑定</button>
-      <div class="qwqnt-pgp-hint qwqnt-pgp-bindError" role="status"></div>
+    <div class="meta">${escapeHtml(k.keyID)} · ${escapeHtml(k.algo)} ${k.bits || ''}位${k.expires ? ` · 过期：${fmtDate(k.expires)}` : ''}</div>
+    <div class="qwqnt-pgp-bindRow">
+      <input type="text" class="qwqnt-pgp-field qwqnt-pgp-bindInput" aria-label="绑定 QQ 号" placeholder="输入 QQ 号，多个用逗号分隔">
+      <button type="button" class="q-button q-button--small q-button--secondary" data-act="bind">绑定</button>
     </div>
-    <div class="ops"><button class="qwqnt-pgp-btn" data-act="more">更多 ▾</button></div>
+    <div class="qwqnt-pgp-hint qwqnt-pgp-bindError" role="status"></div>
   `;
 
   const input = item.querySelector<HTMLInputElement>('.qwqnt-pgp-bindInput')!;
@@ -689,8 +717,6 @@ function renderKeyItem(k: KeyInfo, sec: HTMLElement): HTMLElement {
       await Promise.all(uins.map(uin => window.QwQNTPgp.setKeyBinding(uin, k.keyID)));
       input.value = '';
       await refreshBindingPage(sec);
-      const searchState = bindingPages.get(sec);
-      if (searchState?.searchUin && uins.includes(searchState.searchUin)) await searchBinding(sec, false);
       toast(`已绑定 ${uins.length} 个 QQ 号`);
     } catch (err) {
       toast(`保存失败：${err instanceof Error ? err.message : String(err)}`);
@@ -701,115 +727,31 @@ function renderKeyItem(k: KeyInfo, sec: HTMLElement): HTMLElement {
     if (e.key === 'Enter') { e.preventDefault(); void commit(); }
   });
 
-  item.querySelector<HTMLButtonElement>('button[data-act="more"]')!.addEventListener('click', e => {
-    openKeyMenu(k, sec, e.currentTarget as HTMLElement);
-  });
   return item;
 }
 
-/** 密钥操作的下拉菜单（点「更多」弹出，点外面关掉） */
-function openKeyMenu(k: KeyInfo, sec: HTMLElement, anchor: HTMLElement): void {
-  closeKeyMenu();
-  const fpr = k.fingerprint || k.keyID;
-  const mine = isUsableOwnKey(k) && matchesKeyID(k, config?.ownKeyID ?? '');
-  const menu = document.createElement('div');
-  menu.id = 'qwqnt-pgp-keyMenu';
-  menu.className = 'qwqnt-pgp-menu';
-  menu.innerHTML = `
-    <button class="qwqnt-pgp-btn" data-act="copyFpr">复制指纹</button>
-    <button class="qwqnt-pgp-btn" data-act="export">导出公钥</button>
-    ${isUsableOwnKey(k) && !mine ? '<button class="qwqnt-pgp-btn" data-act="setOwn">设为我的公钥</button>' : ''}
-    ${k.secret ? '' : '<button class="qwqnt-pgp-btn" data-act="certify">认证这个公钥（本地签名）</button>'}
-    <button class="qwqnt-pgp-btn" data-act="trust">设为完全信任</button>
-    ${k.secret ? '<button class="qwqnt-pgp-btn" data-act="revoke">生成吊销证书</button>' : ''}
-    <button class="qwqnt-pgp-btn qwqnt-pgp-key-danger" data-act="delete">删除密钥</button>
-  `;
-  const rect = anchor.getBoundingClientRect();
-  menu.style.cssText = `position:fixed;left:${Math.max(8, rect.left - 120)}px;top:${rect.bottom + 4}px;z-index:99998`;
-  document.body.append(menu);
-
-  const cleanup = (): void => {
-    document.removeEventListener('mousedown', close, true);
-    document.removeEventListener('scroll', close, true);
-    menu.remove();
-    if (keyMenuCleanup === cleanup) keyMenuCleanup = null;
-  };
-  const close = (e: Event): void => {
-    if (!menu.contains(e.target as Node)) {
-      cleanup();
-    }
-  };
-  keyMenuCleanup = cleanup;
-  window.setTimeout(() => {
-    if (!menu.isConnected || keyMenuCleanup !== cleanup) return;
-    document.addEventListener('mousedown', close, true);
-    document.addEventListener('scroll', close, true);
-  }, 0);
-
-  menu.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const act = btn.dataset['act'];
-      cleanup();
-      try {
-        if (act === 'copyFpr') {
-          await copyText(fpr);
-          toast('已复制指纹');
-        } else if (act === 'export') {
-          const text = await window.QwQNTPgp.exportKey(k.keyID, false);
-          await copyText(text);
-          toast('公钥已复制到剪贴板');
-        } else if (act === 'setOwn') {
-          if (!isUsableOwnKey(k)) return;
-          const ownKeyID = k.fingerprint || k.keyID;
-          config = await saveConfig({ ownKeyID });
-          toast('已设为自己的公钥');
-          void refreshKeys(sec);
-        } else if (act === 'certify') {
-          await window.QwQNTPgp.certifyKey(fpr);
-          toast('已认证（本地签名，只在本机生效）');
-          void refreshKeys(sec);
-        } else if (act === 'trust') {
-          await window.QwQNTPgp.setTrust(fpr, 5);
-          toast('已设为完全信任');
-          void refreshKeys(sec);
-        } else if (act === 'revoke') {
-          const text = await window.QwQNTPgp.revokeKey(fpr);
-          await copyText(text);
-          toast('吊销证书已复制，妥善保管');
-        } else if (act === 'delete') {
-          if (!confirm(`确定删除密钥 ${k.keyID}？`)) return;
-          await window.QwQNTPgp.deleteKey(k.keyID, k.secret);
-          toast('已删除');
-          void refreshKeys(sec);
-        }
-      } catch (err) {
-        toast(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
-  });
-}
-
-async function doSearch(sec: HTMLElement, source: 'keyserver' | 'github'): Promise<void> {
-  const input = sec.querySelector<HTMLInputElement>('#qwqnt-pgp-searchInput')!;
-  const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-searchList')!;
-  const query = input.value.trim();
-  if (!query) {
-    toast('先输入要搜的内容');
+async function doSearch(sec: HTMLElement, list: HTMLElement, query: string, source: 'keyserver' | 'github', server: string, isCurrent: () => boolean): Promise<void> {
+  const fingerprint = query.replace(/^0x/i, '').replace(/\s/g, '');
+  const isFingerprint = /^(?:[\da-f]{40}|[\da-f]{64})$/i.test(fingerprint);
+  if (source === 'keyserver' && !isFingerprint && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(query)) {
+    list.textContent = '请输入邮箱或完整指纹';
     return;
   }
   list.innerHTML = '<div class="qwqnt-pgp-item">搜索中…</div>';
   try {
     // 先拿本地已有的 key，判断结果是不是已经导入过
-    const local = await listAllKeys().catch(() => [] as KeyInfo[]);
+    const [local, results] = await Promise.all([
+      listAllKeys().catch(() => [] as KeyInfo[]),
+      source === 'github' ? window.QwQNTPgp.searchGithub(query)
+        : window.QwQNTPgp.searchKeyserver(isFingerprint ? `0x${fingerprint}` : query, server)
+    ]);
+    if (!isCurrent()) return;
     const known = new Set<string>();
     for (const k of local) {
       if (k.keyID) known.add(k.keyID.toLowerCase());
       if (k.fingerprint) known.add(k.fingerprint.toLowerCase());
     }
 
-    const results: KeySearchResult[] = source === 'github'
-      ? await window.QwQNTPgp.searchGithub(query)
-      : await window.QwQNTPgp.searchKeyserver(query);
     if (!results.length) {
       list.innerHTML = '<div class="qwqnt-pgp-item">没有结果</div>';
       return;
@@ -821,25 +763,26 @@ async function doSearch(sec: HTMLElement, source: 'keyserver' | 'github'): Promi
       const imported = known.has(r.keyID.toLowerCase())
         || (r.fingerprint ? known.has(r.fingerprint.toLowerCase()) : false);
       item.innerHTML = `
-        <div><b>${escapeHtml(r.userIds[0] ?? r.keyID)}</b> <span style="opacity:.6">(${r.source})</span></div>
+        <div><b>${escapeHtml(r.userIds[0] ?? r.keyID)}</b></div>
         <div class="meta">${escapeHtml(r.keyID)}${r.bits ? ` · ${r.bits}位` : ''}${r.created ? ` · ${fmtDate(r.created)}` : ''}</div>
-        <div class="ops"><button class="qwqnt-pgp-btn ${imported ? '' : 'primary'}" data-act="import" ${imported ? 'disabled' : ''}>${imported ? '已导入' : '导入'}</button></div>
+        <div class="ops"><button class="q-button q-button--small q-button--secondary" type="button" data-act="import" ${imported ? 'disabled' : ''}>${imported ? '已导入' : '导入'}</button></div>
       `;
       const btn = item.querySelector<HTMLButtonElement>('button[data-act="import"]')!;
       if (!imported) {
         btn.addEventListener('click', async () => {
+          if (!isCurrent()) return;
           btn.disabled = true;
           btn.textContent = '导入中…';
           try {
             if (r.armored) {
               await window.QwQNTPgp.importKey(r.armored);
+            } else if (source === 'keyserver') {
+              await window.QwQNTPgp.recvKey(r.fingerprint || r.keyID, server);
             } else {
-              await window.QwQNTPgp.recvKey(r.keyID);
+              throw new Error('GitHub 未提供可导入的公钥');
             }
             btn.textContent = '已导入';
-            btn.classList.remove('primary');
-            toast('导入成功');
-            void refreshKeys(sec);
+            if (sec.isConnected) void refreshKeys(sec);
           } catch (err) {
             btn.disabled = false;
             btn.textContent = '导入';
@@ -850,7 +793,7 @@ async function doSearch(sec: HTMLElement, source: 'keyserver' | 'github'): Promi
       list.append(item);
     }
   } catch (err) {
-    list.innerHTML = `<div class="qwqnt-pgp-item">搜索失败：${escapeHtml(String(err instanceof Error ? err.message : err))}</div>`;
+    if (isCurrent()) list.innerHTML = `<div class="qwqnt-pgp-item">搜索失败：${escapeHtml(String(err instanceof Error ? err.message : err))}</div>`;
   }
 }
 
@@ -861,11 +804,15 @@ function renderTestSection(): HTMLElement {
   sec.innerHTML = `
     <details class="qwqnt-pgp-details"><summary>加解密测试</summary><div class="qwqnt-pgp-details-body">
       <div class="qwqnt-pgp-row"><label>收件人</label><select id="qwqnt-pgp-testKeySelect" class="qwqnt-pgp-select"><option value="">选择本地公钥</option></select></div>
-      <div class="qwqnt-pgp-row"><label>明文</label><button class="qwqnt-pgp-btn" id="qwqnt-pgp-copyPlain" style="margin-left:auto">复制</button></div>
-      <textarea id="qwqnt-pgp-testPlain" class="qwqnt-pgp-tea" style="min-height:90px">hello qwqnt-pgp</textarea>
-      <div class="qwqnt-pgp-row"><button class="qwqnt-pgp-btn primary" id="qwqnt-pgp-doEncrypt">加密</button><button class="qwqnt-pgp-btn" id="qwqnt-pgp-doDecrypt">解密</button></div>
-      <div class="qwqnt-pgp-row"><label>密文</label><button class="qwqnt-pgp-btn" id="qwqnt-pgp-copyCipher" style="margin-left:auto">复制</button></div>
-      <textarea id="qwqnt-pgp-testCipher" class="qwqnt-pgp-tea" style="min-height:120px" placeholder="-----BEGIN PGP MESSAGE-----"></textarea>
+      <div class="qwqnt-pgp-test-field">
+        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-testPlain">明文</label><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-copyPlain" style="margin-left:auto">复制</button></div>
+        <textarea id="qwqnt-pgp-testPlain" class="qwqnt-pgp-tea">hello qwqnt-pgp</textarea>
+      </div>
+      <div class="qwqnt-pgp-row"><button class="q-button q-button--small q-button--primary" id="qwqnt-pgp-doEncrypt">加密</button><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-doDecrypt">解密</button></div>
+      <div class="qwqnt-pgp-test-field">
+        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-testCipher">密文</label><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-copyCipher" style="margin-left:auto">复制</button></div>
+        <textarea id="qwqnt-pgp-testCipher" class="qwqnt-pgp-tea" placeholder="-----BEGIN PGP MESSAGE-----"></textarea>
+      </div>
       <div class="qwqnt-pgp-hint" id="qwqnt-pgp-testState" role="status"></div>
     </div></details>
   `;

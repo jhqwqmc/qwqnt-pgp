@@ -25,7 +25,7 @@ async function fetchText(url: string, timeout = 15000): Promise<string> {
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     return await res.text();
   } catch (err) {
-    throw new Error(`请求 ${url} 失败：${String(err)}（网络不通时可先在浏览器里导出公钥再手动导入）`);
+    throw new Error(`GitHub 请求失败：${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
   }
@@ -37,9 +37,7 @@ export async function searchGithub(username: string): Promise<KeySearchResult[]>
   if (!name) throw new Error('请输入 GitHub 用户名');
   const text = await fetchText(`${GITHUB_API}/users/${encodeURIComponent(name)}/gpg_keys`);
   const list = JSON.parse(text) as GithubGpgKey[];
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new Error(`用户 ${name} 没有公开的 GPG 公钥`);
-  }
+  if (!Array.isArray(list)) throw new Error('GitHub 返回格式无效');
   return list.map(item => ({
     keyID: item.key_id,
     fingerprint: item.key_id,

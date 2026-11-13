@@ -1,10 +1,9 @@
 /** Adds PGP actions to QQ's own message context menu. */
 import { manualDecrypt } from './message';
 import { getCached, loadConfig } from './config-cache';
+import { toast } from './toast';
 
 const ITEM_ID = 'qwqnt-pgp-decrypt';
-const FAILURE_TOAST_ID = 'qwqnt-pgp-decrypt-failure-toast';
-const FAILURE_TOAST_STYLE_ID = 'qwqnt-pgp-decrypt-toast-style';
 const MESSAGE_CONTENT_SELECTOR = '.message-container > .message-content__wrapper';
 let installed = false;
 let contextOwner: WeakRef<Element> | null = null;
@@ -12,7 +11,6 @@ let contextAt = 0;
 const OWNER_TIMEOUT_MS = 20_000;
 const inFlight = new WeakSet<Element>();
 const menuOwners = new WeakMap<HTMLElement, WeakRef<Element>>();
-let failureToastTimer = 0;
 
 export function startDecryptMenu(): void {
   if (installed) return;
@@ -189,7 +187,7 @@ function attachMenuItem(): void {
     menu.remove();
     contextOwner = null;
     inFlight.add(targetOwner);
-    void manualDecrypt(targetOwner).catch(() => enqueueFailure()).finally(() => inFlight.delete(targetOwner));
+    void manualDecrypt(targetOwner).catch(() => toast('解密失败')).finally(() => inFlight.delete(targetOwner));
   });
   sampleRoot.insertAdjacentElement('afterend', item);
 }
@@ -225,25 +223,4 @@ function cleanStyleAttributes(element: HTMLElement, root = false): void {
       (root && ['id', 'role', 'type'].includes(attribute.name));
     if (!keep) element.removeAttribute(attribute.name);
   }
-}
-
-function enqueueFailure(): void {
-  let toast = document.getElementById(FAILURE_TOAST_ID);
-  if (!toast) {
-    if (!document.getElementById(FAILURE_TOAST_STYLE_ID)) {
-      const style = document.createElement('style');
-      style.id = FAILURE_TOAST_STYLE_ID;
-      style.textContent = `#${FAILURE_TOAST_ID}{position:fixed;left:50%;top:50%;z-index:2147483647;transform:translate(-50%,-50%);padding:12px 22px;border:var(--border_primary,1px solid rgba(127,127,127,.2));border-radius:10px;background:var(--bg_top_standard,var(--bg_bottom_standard,#fff));color:var(--text_primary,#222);box-shadow:var(--shadow_bg_middle_primary,0 6px 24px rgba(0,0,0,.22));font-family:inherit;font-size:14px;line-height:1.4;pointer-events:none}`;
-      document.head.append(style);
-    }
-    toast = document.createElement('div');
-    toast.id = FAILURE_TOAST_ID;
-    toast.setAttribute('role', 'status');
-    document.body.append(toast);
-  }
-  toast.textContent = '解密失败';
-  window.clearTimeout(failureToastTimer);
-  failureToastTimer = window.setTimeout(() => {
-    toast?.remove();
-  }, 2600);
 }

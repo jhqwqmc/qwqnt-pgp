@@ -10,10 +10,6 @@ let prepared: { wrapper: string; offsets: ReturnType<typeof resolveOffsets> } | 
 let hooked = false;
 let attemptedHook = false;
 
-export function hasAttemptedNativeHook(): boolean {
-  return attemptedHook;
-}
-
 export function prepareNativeOffsets(pluginDir: string | undefined, dataDir: string, wrapper?: string): void {
   if (!supported) return;
   if (!pluginDir || !isAbsolute(pluginDir)) {

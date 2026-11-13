@@ -1,3 +1,4 @@
+import { buildCiphertextCard, CIPHERTEXT_SLICE_LENGTH } from '../shared/forward-card';
 /**
  * 发送模块：加密 → 切片 → 发「伪造聊天记录卡片」。
  * 通过 preload 暴露的 sendArk 接口发送卡片，不在 renderer 中调用未公开的内核桥接对象。
@@ -16,11 +17,6 @@ export interface PeerTarget {
 export interface SendOptions {
   plaintext: string;
   peer: PeerTarget;
-  selfUid: string;
-  /** 自己的 QQ 号（伪造卡片的「发送人」用） */
-  selfUin?: string;
-  selfNick?: string;
-  sliceLength: number;
   keyIDs?: string[];
 }
 
@@ -83,29 +79,8 @@ function randomUUID(): string {
  * 在本地构造「聊天记录」卡片。
  * resId 由协议端上传后拿到，点开才看得到内容。
  */
-export function buildFakeForwardCard(slices: string[], senderName: string, resId: string): string {
-  const id = randomUUID();
-  const total = slices.length;
-  const news = slices.map(s => ({ text: `${senderName}: ${s}` }));
-  return JSON.stringify({
-    app: 'com.tencent.multimsg',
-    config: { autosize: 1, forward: 1, round: 1, type: 'normal', width: 300 },
-    desc: '[聊天记录]',
-    // 注意：extra / meta 必须是对象，字符串会让本机回显渲染失败（显示「暂不支持该消息类型」）
-    extra: { filename: id, tsum: total },
-    meta: {
-      detail: {
-        news,
-        resid: resId,
-        source: `${senderName}的聊天记录`,
-        summary: `查看${total}条转发消息`,
-        uniseq: id
-      }
-    },
-    prompt: '[聊天记录]',
-    ver: '0.0.0.5',
-    view: 'contact'
-  });
+function buildFakeForwardCard(slices: string[], resId: string): string {
+  return buildCiphertextCard(slices.length, resId, randomUUID());
 }
 
 /** 把长文本切成若干段 */
@@ -157,27 +132,19 @@ async function resolveRecipients(peer: PeerTarget, cfg: PgpConfig, selfUin: stri
 /** 主入口：加密 + 发伪造聊天记录卡片 */
 export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
   const { peer, plaintext } = opts;
-  let account: SendAccount;
   try {
-    await loadAccountContext();
-    account = currentSendAccount();
+    const context = await loadAccountContext();
+    if (!context) throw new Error('当前 QQ 账号上下文不可用');
+    const account = { accountId: context.accountId, generation: getAccountGeneration() };
+    assertSendAccount(account);
     const cfg = await loadConfig();
     assertSendAccount(account);
-    let selfUin = isNumericUin(opts.selfUin?.trim())
-      ? opts.selfUin!.trim()
-      : getUinByUid(opts.selfUid);
-    if (peer.chatType === 2 && !selfUin && opts.selfUid) {
-      try { selfUin = await resolvePeerUin(opts.selfUid); } catch { /* handled by the explicit gate below */ }
-      assertSendAccount(account);
-    }
+    const selfUin = context.accountId;
     // Enforce the user-facing opt-in before recipient lookup, key listing,
     // encryption, forwarding upload, or sendArk. Explicit keyIDs cannot bypass it.
     let peerUin = '';
     let groupTargets: string[] = [];
     if (peer.chatType === 2) {
-      if (!selfUin) {
-        return { ok: false, slices: 0, error: '无法确认当前账号的数字 QQ 号，已阻止群聊加密发送' };
-      }
       const groupId = await resolveGroupId(peer);
       assertSendAccount(account);
       const group = await getGroupConfig(groupId);
@@ -232,13 +199,12 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
     }
     const armored = await window.QwQNTPgp.encrypt(plaintext, recipients);
     assertSendAccount(account);
-    const slices = sliceText(armored, opts.sliceLength);
+    const slices = sliceText(armored, CIPHERTEXT_SLICE_LENGTH);
     log(`加密完成：${armored.length} 字符，切成 ${slices.length} 段`);
     return await sendFakeForward(
       peer,
       slices,
-      opts.selfUid,
-      selfUin,
+      context.selfUid,
       account
     );
   } catch (err) {
@@ -251,15 +217,13 @@ async function sendFakeForward(
   peer: PeerTarget,
   slices: string[],
   selfUid: string,
-  selfUin: string,
   account: SendAccount
 ): Promise<SendResult> {
-  const senderName = '加密';
   const groupId = peer.chatType === 2 ? Number(peer.peerUid) || 0 : 0;
   const now = Math.floor(Date.now() / 1000);
   const nodes = slices.map(text => ({
-    uin: selfUin,
-    name: senderName,
+    uin: 0,
+    name: '\u200B',
     groupId: groupId || undefined,
     time: now,
     text
@@ -280,34 +244,18 @@ async function sendFakeForward(
     return { ok: false, slices: 0, error: `上传聊天记录失败：${reason}` };
   }
 
-  const card = buildFakeForwardCard(slices, senderName, resId);
-  const cardData = JSON.parse(card) as { app: string; meta: { detail: { uniseq: string } } };
-  log(`伪造卡片：目标=${JSON.stringify(peer)} 段数=${slices.length} 发送人=${senderName} 卡片=${card.slice(0, 600)}`);
-  const sentText = slices.join('');
-  // 提前登记，以覆盖 QQ 在 sendArk promise resolve 前就插入“不支持”气泡的时序。
-  const sentMarker = { text: sentText, app: cardData.app, uniseq: cardData.meta.detail.uniseq, used: false };
-  (window as unknown as Record<string, unknown>)['__qwqnt_pgp_lastSent'] = sentMarker;
+  const card = buildFakeForwardCard(slices, resId);
+  log(`伪造卡片：目标=${JSON.stringify(peer)} 段数=${slices.length} 卡片=${card.slice(0, 600)}`);
   try {
     assertSendAccount(account);
     const r = await window.QwQNTPgp.sendArk({ chatType: peer.chatType, peerUid: peer.peerUid }, card);
     assertSendAccount(account);
     log(`伪造卡片发送结果：ok=${r.ok}${r.error ? ` err=${r.error}` : ''}`);
     if (!r.ok) {
-      if ((window as unknown as Record<string, unknown>)['__qwqnt_pgp_lastSent'] === sentMarker) {
-        delete (window as unknown as Record<string, unknown>)['__qwqnt_pgp_lastSent'];
-      }
       return { ok: false, slices: 0, error: `伪造卡片发送失败：${r.error ?? ''}` };
     }
     return { ok: true, slices: slices.length };
   } catch (err) {
-    if ((window as unknown as Record<string, unknown>)['__qwqnt_pgp_lastSent'] === sentMarker) {
-      delete (window as unknown as Record<string, unknown>)['__qwqnt_pgp_lastSent'];
-    }
     return { ok: false, slices: 0, error: err instanceof Error ? err.message : String(err) };
   }
-}
-
-/** 一句话概括当前能用的发送通道（给设置页显示） */
-export function describeChannels(): string {
-  return '内核通道：QQ 合并转发';
 }

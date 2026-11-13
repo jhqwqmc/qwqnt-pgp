@@ -5,9 +5,10 @@
  *  - off：完全不干预，正常发送
  */
 import { log } from './log';
-import { getCurAio, getCurrentPeer, getSelfInfo } from './store';
+import { getCurrentPeer } from './store';
 import { getActiveAccountId, getCached, loadAccountContext, loadConfig } from './config-cache';
 import { sendEncrypted } from './send';
+import { toast } from './toast';
 import type { SendPolicy } from '@/shared/types';
 
 const EDITOR_SELECTORS = [
@@ -203,7 +204,7 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
       return;
     }
     const originalPeer = getCurrentPeer(editor);
-    const cfg = await loadConfig();
+    await loadConfig();
     if (epoch !== inputAccountEpoch) return;
     const peer = getCurrentPeer(editor);
     if (!peer) {
@@ -214,30 +215,19 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
       toast('会话已切换，已取消发送');
       return;
     }
-    const self = await getSelfInfo();
-    if (epoch !== inputAccountEpoch || !self?.uid || !self.uin) return;
-    const current = getCurrentPeer(editor);
-    if (current?.peerUid !== peer.peerUid || current.chatType !== peer.chatType) {
-      toast('会话已切换，已取消发送');
-      return;
-    }
-    log(`开始加密发送：明文 ${plaintext.length} 字符；会话=${JSON.stringify(peer)}；自己=${JSON.stringify(self)}`);
-    toast('加密中…（伪造聊天记录）');
+    log(`开始加密发送：明文 ${plaintext.length} 字符；会话=${JSON.stringify(peer)}`);
+    toast('加密中…');
 
     const res = await sendEncrypted({
       plaintext,
-      peer,
-      selfUid: self?.uid ?? '',
-      selfUin: self?.uin ?? '',
-      selfNick: self?.nick ?? self?.uin,
-      sliceLength: cfg.sliceLength
+      peer
     });
     if (epoch !== inputAccountEpoch) return;
 
     if (res.ok) {
       // 等待加密/发送期间若用户继续编辑，不要误删新输入。
       if (getEditorText(editor) === plaintext) clearEditor(editor);
-      toast(`已发送（聊天记录，${res.slices} 段）`);
+      toast(`已发送`);
     } else {
       toast(res.error ?? '发送失败');
       log(`发送失败：${res.error}`);
@@ -249,38 +239,4 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
   } finally {
     sending = false;
   }
-}
-
-/** 页面上飘一条提示 */
-export function toast(text: string, timeout = 2600): void {
-  const el = document.createElement('div');
-  el.textContent = text;
-  el.style.cssText = [
-    'position:fixed',
-    'right:18px',
-    'bottom:90px',
-    'z-index:2147483647',
-    'padding:8px 14px',
-    'border-radius:8px',
-    'background:var(--bg_top_standard,var(--bg_bottom_standard,#222))',
-    'color:var(--text_primary,#fff)',
-    'font-size:13px',
-    'max-width:420px',
-    'box-shadow:var(--shadow_bg_middle_primary,0 4px 18px rgba(0,0,0,.3))',
-    'transition:opacity .25s',
-    'pointer-events:none'
-  ].join(';');
-  document.body.appendChild(el);
-  window.setTimeout(() => {
-    el.style.opacity = '0';
-    window.setTimeout(() => el.remove(), 300);
-  }, timeout);
-}
-
-/** 调试：打印当前会话信息 */
-export function dumpRuntime(): void {
-  const aio = getCurAio();
-  const peer = getCurrentPeer();
-  const self = getSelfInfo();
-  log(`peer=${JSON.stringify(peer)} self=${JSON.stringify(self)} aioKeys=${aio ? Object.keys(aio).join(',') : 'null'}`);
 }

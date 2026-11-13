@@ -1,3 +1,4 @@
+import { buildCiphertextCard, CIPHERTEXT_SLICE_LENGTH } from '../shared/forward-card';
 import { randomUUID } from 'node:crypto';
 import type { KeyBinding, PgpConfig } from '@/shared/types';
 
@@ -206,7 +207,6 @@ export function installAutoSendInterceptor(
       }
       const peer = normalizePeer(msgPayload?.peer);
       if (!peer) throw new Error('QQ sendMsg 请求缺少有效会话信息');
-      const cfg = deps.getConfig(accountId);
       let otherBindings: KeyBinding[] = [];
       let groupId = 0;
       if (peer.chatType === 1) {
@@ -263,12 +263,12 @@ export function installAutoSendInterceptor(
       ensureCurrent();
       const self = await deps.getSelfInfo(accountId, context.selfUid);
       if (!self?.uid || !numericUin(self.uin)) throw new Error('无法读取本机账号信息，已阻止明文发送');
-      const slices = sliceText(armored, cfg.sliceLength);
+      const slices = sliceText(armored, CIPHERTEXT_SLICE_LENGTH);
       if (!slices.length) throw new Error('加密结果为空，已阻止明文发送');
       const now = Math.floor(Date.now() / 1000);
       const nodes = slices.map(text => ({
-        uin: self.uin,
-        name: self.nick || '我',
+        uin: '0',
+        name: '\u200B',
         ...(groupId ? { groupId } : {}),
         time: now,
         text
@@ -276,7 +276,7 @@ export function installAutoSendInterceptor(
       const uploaded = await deps.uploadForward({ selfUid: self.uid, nodes, groupId });
       ensureCurrent();
       if (!uploaded?.resId) throw new Error('服务器没有返回转发记录 ID，已阻止明文发送');
-      const card = buildForwardCard(slices, self.nick || '我', uploaded.resId);
+      const card = buildCiphertextCard(slices.length, uploaded.resId, randomUUID());
       const arkElement = { elementId: '', elementType: 10, arkElement: { bytesData: card } };
       const cloned = cloneEnvelope(originalEnvelope);
       const clonedRequest = cloned[1] as AnyObj;
@@ -366,29 +366,6 @@ function sliceText(text: string, limit: number): string[] {
   const slices: string[] = [];
   for (let offset = 0; offset < text.length; offset += max) slices.push(text.slice(offset, offset + max));
   return slices;
-}
-
-function buildForwardCard(slices: string[], senderName: string, resId: string): string {
-  const id = randomUUID();
-  const news = slices.map(text => ({ text: `${senderName}: ${text}` }));
-  return JSON.stringify({
-    app: 'com.tencent.multimsg',
-    config: { autosize: 1, forward: 1, round: 1, type: 'normal', width: 300 },
-    desc: '[聊天记录]',
-    extra: { filename: id, tsum: slices.length },
-    meta: {
-      detail: {
-        news,
-        resid: resId,
-        source: `${senderName}的聊天记录`,
-        summary: `查看${slices.length}条转发消息`,
-        uniseq: id
-      }
-    },
-    prompt: '[聊天记录]',
-    ver: '0.0.0.5',
-    view: 'contact'
-  });
 }
 
 function errorText(error: unknown): string {

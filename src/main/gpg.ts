@@ -204,15 +204,6 @@ export class Gpg {
     return { secret: secretKeys, public: publicKeys };
   }
 
-  /** 导出公钥（armored） */
-  async exportKey(keyID: string, secret = false): Promise<string> {
-    const res = await this.run(['--armor', secret ? '--export-secret-keys' : '--export', keyID]);
-    if (res.code !== 0 || !res.stdout.includes('BEGIN PGP')) {
-      throw new Error(`导出失败：${(res.stderr || res.error || '').trim()}`);
-    }
-    return res.stdout;
-  }
-
   /** 导入密钥 */
   async importKey(armored: string): Promise<{ keyIDs: string[] }> {
     const res = await this.run(['--import'], armored);
@@ -277,70 +268,6 @@ export class Gpg {
     return { plaintext: res.stdout, signature: parseSignature(res.stderr) };
   }
 
-  /** 删除密钥 */
-  async deleteKey(keyID: string, secret: boolean): Promise<void> {
-    if (secret) {
-      const result = await this.run(['--delete-secret-keys', '--yes', keyID]);
-      if (result.code !== 0) throw new Error(`删除私钥失败：${result.stderr || result.error}`);
-    }
-    const res = await this.run(['--delete-keys', '--yes', keyID]);
-    if (res.code !== 0) {
-      const err = (res.stderr || res.error || '').trim();
-      if (!/not found|No such/i.test(err)) throw new Error(`删除失败：${err}`);
-    }
-  }
-
-  /** 生成吊销证书（返回 armored 文本；硬件密钥需要 PIN / 口令） */
-  async revokeKey(fingerprint: string): Promise<string> {
-    // gen-revoke 会交互问：确认(y)、原因码(0=不再使用)、说明(空)、再确认(y)
-    const res = await this.run(
-      ['--no-batch', '--command-fd', '0', '--status-fd', '2', '--armor', '--gen-revoke', fingerprint],
-      'y\n0\n\ny\n',
-      120000
-    );
-    const text = res.stdout || '';
-    const start = text.indexOf('-----BEGIN PGP PUBLIC KEY BLOCK-----');
-    if (start < 0) {
-      throw new Error(`生成吊销证书失败：${(res.stderr || res.error || text || '').trim().slice(0, 300)}`);
-    }
-    return text.slice(start);
-  }
-
-  /** 生成一个新的软件密钥对（存在本机 GnuPG 里） */
-  async generateKey(name: string, email: string, passphrase = ''): Promise<string> {
-    const uid = (email ? `${name} <${email}>` : name).trim();
-    if (!uid) throw new Error('要填名字或邮箱');
-    const res = await this.run(
-      ['--batch', '--yes', '--pinentry-mode', 'loopback', '--passphrase-fd', '0', '--status-fd', '2',
-        '--quick-generate-key', uid, 'default', 'default', '0'],
-      `${passphrase}\n`,
-      300000
-    );
-    if (res.code !== 0) {
-      throw new Error(`生成密钥失败：${(res.stderr || res.error || '').trim().slice(0, 300)}`);
-    }
-    const m = /\[GNUPG:\] KEY_CREATED \w ([0-9A-F]{40,64})/.exec(res.stderr)
-      ?? /key ([0-9A-F]{16,40}) marked as ultimately trusted/.exec(res.stderr)
-      ?? /([0-9A-F]{40})/.exec(res.stderr);
-    return m?.[1] ?? '';
-  }
-
-  /** 给对方的公钥做本地认证（local signature，只在本机生效，不会上传 keyserver） */
-  async certifyKey(fingerprint: string): Promise<void> {
-    const res = await this.run(['--batch', '--yes', '--quick-lsign-key', fingerprint], undefined, 120000);
-    if (res.code !== 0) {
-      throw new Error(`认证失败：${(res.stderr || res.error || '').trim().slice(0, 300)}`);
-    }
-  }
-
-  /** 设置信任级别（1~5，5=完全信任） */
-  async setTrust(fingerprint: string, level: number): Promise<void> {
-    const res = await this.run(['--import-ownertrust'], `${fingerprint}:${level}:\n`);
-    if (res.code !== 0) {
-      throw new Error(`设置信任失败：${(res.stderr || res.error || '').trim()}`);
-    }
-  }
-
   /** 从 keyserver 拉取密钥 */
   async recvKey(keyID: string, server: string): Promise<string> {
     const url = server.includes('://') ? server : `hkps://${server}`;
@@ -360,7 +287,11 @@ export class Gpg {
     // gpg 的 --search-keys --with-colons 输出格式：pub:指纹:算法:位数:创建时间:: / uid:URL编码的UID:时间::
     const colon = parseSearchColon(text);
     if (colon.length) return colon;
-    return parseSearchResult(text, 'keyserver');
+    const results = parseSearchResult(text, 'keyserver');
+    if (!results.length && res.code !== 0 && !/not found|no data/i.test(text)) {
+      throw new Error((res.stderr || res.error || '密钥服务器请求失败').trim());
+    }
+    return results;
   }
 }
 
@@ -387,7 +318,6 @@ export function parseColonKeys(output: string): KeyInfo[] {
         expired: f[1] === 'e' || (Number(f[6]) > 0 && Number(f[6]) <= Date.now() / 1000),
         revoked: f[1] === 'r',
         secret: type === 'sec',
-        validity: f[1] ?? '',
         userIds: [],
         subkeys: []
       };
@@ -405,7 +335,6 @@ export function parseColonKeys(output: string): KeyInfo[] {
         expired: f[1] === 'e' || (Number(f[6]) > 0 && Number(f[6]) <= Date.now() / 1000),
         revoked: f[1] === 'r',
         secret: type === 'ssb',
-        validity: f[1] ?? '',
         userIds: [],
         subkeys: []
       };

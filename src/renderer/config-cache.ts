@@ -30,12 +30,10 @@ interface ConfigDataApi {
   getGroupConfig?: (groupId: string) => Promise<{ groupId: string; targets: string[] }>;
   setGroupTarget?: (groupId: string, uin: string, enabled: boolean) => Promise<{ groupId: string; targets: string[] } | void>;
   getKeyBindings?: (uins: string[]) => Promise<KeyBinding[]>;
-  listKeyBindings?: (cursor?: string | null, limit?: number) => Promise<{ items: KeyBinding[]; nextCursor: string | null }>;
   setKeyBinding?: (uin: string, keyID: string | null) => Promise<KeyBinding | void>;
   onDataChanged?: (cb: (event: DataChangedEvent) => void) => void;
 }
 export interface DataChangedEvent { accountId: string; kind: 'dm' | 'group' | 'binding'; id: string }
-export interface KeyBindingPage { items: KeyBinding[]; nextCursor: string | null }
 
 function dataApi(): ConfigDataApi { return window.QwQNTPgp as typeof window.QwQNTPgp & ConfigDataApi; }
 function isNumericId(value: string): boolean { return /^[1-9]\d*$/.test(value); }
@@ -321,18 +319,6 @@ export async function getKeyBindings(uins: string[]): Promise<KeyBinding[]> {
 }
 export async function getKeyBinding(uin: string): Promise<KeyBinding | null> {
   return (await getKeyBindings([uin]))[0] ?? null;
-}
-export function getCachedKeyBinding(uin: string): KeyBinding | null | undefined {
-  return isNumericId(uin) ? cached(bindingCache, uin) : undefined;
-}
-export async function listKeyBindings(cursor?: string | null, limit = 100): Promise<KeyBindingPage> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  const generation = accountGeneration;
-  if (generation !== accountGeneration) throw new Error('账号已切换，取消旧密钥绑定列表');
-  const api = dataApi(); if (!api.listKeyBindings) throw new Error('binding list API unavailable');
-  const result = await api.listKeyBindings(cursor, Math.max(1, Math.min(512, Math.floor(limit))));
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧密钥绑定列表');
-  return result;
 }
 export async function setKeyBinding(uin: string, keyID: string | null): Promise<void> {
   await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');

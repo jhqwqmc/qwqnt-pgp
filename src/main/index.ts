@@ -12,7 +12,7 @@ import { BoundedCryptoQueue } from './crypto-queue';
 import { Gpg, resumeDecryption } from './gpg';
 import { chooseOwnKey } from './identity';
 import { searchGithub } from './keys';
-import { sendArk, sendSso, getSelfLoginInfo, diagnose, getGroupMembers, recvForwardMsg, resolveUin, getMessageRecord, sendSsoWithoutHook, probeEcdhSso, verifyEcdhProbeBinary, prepareSsoOffsets } from './kernel';
+import { sendArk, sendSso, getSelfLoginInfo, getGroupMembers, recvForwardMsg, resolveUin, getMessageRecord, prepareSsoOffsets } from './kernel';
 import { buildUploadPacket, parseUploadResponse, type ForwardNode } from './forward';
 import { AccountContextRegistry, type AccountContext } from './account-context';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -291,7 +291,7 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   });
   ipcMain.handle('qwqnt-pgp:set-group-target', (event, groupId: string, uin: string, enabled: boolean) => setGroupTarget(captureAccount(event).accountId, groupId, uin, enabled));
   ipcMain.handle('qwqnt-pgp:get-key-bindings', (event, uins: string[]) => getKeyBindings(captureAccount(event).accountId, uins));
-  ipcMain.handle('qwqnt-pgp:list-key-bindings', (event, cursor?: string, limit?: number) => listKeyBindings(captureAccount(event).accountId, cursor, limit));
+  ipcMain.handle('qwqnt-pgp:list-key-bindings', (event, cursor?: string, limit?: number, query?: string) => listKeyBindings(captureAccount(event).accountId, cursor, limit, query));
   ipcMain.handle('qwqnt-pgp:set-key-binding', (event, uin: string, keyID: string | null) => setKeyBinding(captureAccount(event).accountId, uin, keyID));
 
   ipcMain.handle('qwqnt-pgp:detect-gpg', async (event: unknown) => {
@@ -305,11 +305,6 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   ipcMain.handle('qwqnt-pgp:list-keys', async event => (await syncOwnIdentity(captureAccount(event).accountId)).keys);
 
   ipcMain.handle('qwqnt-pgp:import-key', async (event, armored: string) => gpgFor(captureAccount(event).accountId).importKey(armored));
-  ipcMain.handle('qwqnt-pgp:export-key', async (event, keyID: string, secret: boolean) => gpgFor(captureAccount(event).accountId).exportKey(keyID, !!secret));
-  ipcMain.handle('qwqnt-pgp:delete-key', async (event, keyID: string, secret: boolean) => gpgFor(captureAccount(event).accountId).deleteKey(keyID, !!secret));
-  ipcMain.handle('qwqnt-pgp:set-trust', async (event, fpr: string, level: number) => gpgFor(captureAccount(event).accountId).setTrust(fpr, level));
-  ipcMain.handle('qwqnt-pgp:revoke-key', async (event, fpr: string) => gpgFor(captureAccount(event).accountId).revokeKey(fpr));
-  ipcMain.handle('qwqnt-pgp:certify-key', async (event, fpr: string) => gpgFor(captureAccount(event).accountId).certifyKey(fpr));
   ipcMain.handle('qwqnt-pgp:recv-key', async (event, keyID: string, server?: string) => {
     const accountId = captureAccount(event).accountId;
     return gpgFor(accountId).recvKey(keyID, server || getConfig(accountId).keyserver);
@@ -369,69 +364,6 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   ipcMain.handle('qwqnt-pgp:self-info', async event => {
     const context = captureAccount(event);
     return getSelfLoginInfo(context.selfUid);
-  });
-  /** 调试用：直接发一个 SSO 包（cmd + base64 数据），回包转 base64 */
-  ipcMain.handle('qwqnt-pgp:debug-sso', async (event, cmd: string, b64: string) => {
-    const ctx = captureAccount(event); assertNativeAccount(ctx);
-    const data = Buffer.from(b64, 'base64');
-    log(`[debug] sendSso ${cmd} ${data.length}B`);
-    const rsp = await sendSso(cmd, data);
-    log(`[debug] sendSso 回包 ${rsp.length}B`);
-    return { base64: rsp.toString('base64'), length: rsp.length };
-  });
-  /** 调试用：直接拼包并上传（返回 resId） */
-  ipcMain.handle('qwqnt-pgp:debug-upload', async (event, opts: { selfUid: string; nodes: ForwardNode[]; groupId: number }) => {
-    const ctx = captureAccount(event); assertNativeAccount(ctx); if (ctx.selfUid !== opts.selfUid) throw new Error('账号已切换');
-    const pkt = buildUploadPacket(opts.selfUid, opts.nodes, opts.groupId);
-    log(`[debug] 上传包 ${pkt.data.length}B base64=${pkt.data.toString('base64').slice(0, 200)}…`);
-    const rsp = await sendSso(pkt.cmd, pkt.data);
-    return { resId: parseUploadResponse(rsp).resId, rspBase64: rsp.toString('base64') };
-  });
-  ipcMain.handle('qwqnt-pgp:kernel-diagnose', event => { assertNativeAccount(captureAccount(event)); return diagnose(); });
-  ipcMain.handle('qwqnt-pgp:debug-upload-without-hook', async event => {
-    const context = captureAccount(event);
-    assertNativeAccount(context);
-    const self = await getSelfLoginInfo(context.selfUid);
-    const current = captureAccount(event);
-    if (!self || self.uin !== context.accountId || current.accountId !== context.accountId ||
-        current.revision !== context.revision) throw new Error('当前账号无法确认');
-    assertNativeAccount(current);
-    const senderName = self.nick || self.uin;
-    const packet = buildUploadPacket(context.selfUid, [
-      { uin: context.accountId, name: senderName, text: '你好', time: Math.floor(Date.now() / 1000) },
-    ], 0);
-    const response = await sendSsoWithoutHook(packet.cmd, packet.data);
-    return { resId: parseUploadResponse(response).resId, senderName };
-  });
-  ipcMain.handle('qwqnt-pgp:debug-probe-ecdh', async (event, serviceType: number, third: string) => {
-    if (!Number.isInteger(serviceType) || serviceType < 0 || serviceType > 0xffff_ffff ||
-        !['empty', 'uin', 'uid'].includes(third)) throw new Error('ECDH 测试参数无效');
-    const context = captureAccount(event);
-    assertNativeAccount(context);
-    await verifyEcdhProbeBinary();
-    const self = await getSelfLoginInfo(context.selfUid);
-    const current = captureAccount(event);
-    if (!self || self.uin !== context.accountId || current.accountId !== context.accountId ||
-        current.revision !== context.revision) throw new Error('当前账号无法确认');
-    assertNativeAccount(current);
-    const packet = buildUploadPacket(context.selfUid, [
-      { uin: context.accountId, name: self.nick || self.uin, text: '你好', time: Math.floor(Date.now() / 1000) },
-    ], 0);
-    const thirdArg = third === 'uin' ? context.accountId : third === 'uid' ? context.selfUid : '';
-    const response = await probeEcdhSso(packet.cmd, serviceType, thirdArg, packet.data);
-    const hasResId = (response.code === null || response.code === 0) && response.candidates.some(bytes => {
-      try {
-        return /^[A-Za-z0-9+/_=-]{8,512}$/.test(parseUploadResponse(bytes).resId);
-      } catch {
-        return false;
-      }
-    });
-    return {
-      code: response.code,
-      fields: response.fields,
-      byteLengths: response.candidates.map(bytes => bytes.length),
-      hasResId,
-    };
   });
 }
 

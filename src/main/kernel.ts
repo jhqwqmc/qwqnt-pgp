@@ -5,12 +5,11 @@
  * QwQNT 的 main 插件本来就跑在 QQ 主进程里，wrapper.node 已经被 QQ 自己加载过，
  * 这里 process.dlopen 拿到的就是同一个模块实例（不会重复加载）。
  */
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 import { createRequire } from 'node:module';
 import { log } from './log';
-import { hasAttemptedNativeHook, initNativeHook, prepareNativeOffsets } from './native-hook';
+import { initNativeHook, prepareNativeOffsets } from './native-hook';
 import { buildRecvPacket, parseRecvResponse } from './forward';
 import { accountIdFromLoginList } from './account-context';
 
@@ -346,86 +345,6 @@ export async function sendSso(cmd: string, data: Buffer): Promise<Buffer> {
   return requestSso(cmd, data);
 }
 
-export async function sendSsoWithoutHook(cmd: string, data: Buffer): Promise<Buffer> {
-  if (hasAttemptedNativeHook()) throw new Error('本次 QQ 进程已尝试加载收发 Hook，请重启后再测试');
-  const response = await requestSso(cmd, data);
-  if (hasAttemptedNativeHook()) throw new Error('测试期间启用了收发 Hook，结果无效');
-  return response;
-}
-
-/** Only the Windows wrapper whose JS argument conversion was inspected is covered by this probe. */
-export async function verifyEcdhProbeBinary(): Promise<void> {
-  const expected = '0d8b94448f4dafe7337b88d6a568b004224c37fcbe2bd1142c1af7624fbd534c';
-  if (process.platform !== 'win32' || process.arch !== 'x64' || !getWrapper() || !wrapperPath) {
-    throw new Error('ECDH 测试需要已核对的 Windows x64 QQ 内核');
-  }
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(wrapperPath)) hash.update(chunk);
-  if (hash.digest('hex') !== expected) throw new Error('当前 wrapper.node 与已核对的 9.9.36-53644 文件不同');
-}
-
-let ecdhProbePending = false;
-
-export async function probeEcdhSso(cmd: string, serviceType: number, thirdArg: string, data: Buffer) {
-  if (hasAttemptedNativeHook()) throw new Error('本次 QQ 进程已尝试启用收发 Hook，请重启后测试');
-  // The inspected Windows wrapper binds this getter to the engine singleton.
-  const engine = getWrapper()?.NodeIQQNTWrapperEngine?.get?.();
-  if (!engine) throw new Error('未能取得 QQ 内核引擎');
-  if (typeof engine.getECDHService !== 'function') throw new Error('QQ 内核引擎未暴露 getECDHService');
-  const service = engine.getECDHService();
-  if (!service) throw new Error('QQ 内核引擎未返回 ECDH 服务实例');
-  if (typeof service.sendSSORequest !== 'function') throw new Error('ECDH 服务实例未暴露 sendSSORequest');
-  if (ecdhProbePending) throw new Error('上一次 ECDH 请求尚未结束');
-
-  ecdhProbePending = true;
-  const request: Promise<unknown> = Promise.resolve().then(() =>
-    service.sendSSORequest(cmd, serviceType, thirdArg, Uint8Array.from(data))
-  );
-  const clearPending = () => { ecdhProbePending = false; };
-  void request.then(clearPending, clearPending);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const reply = await Promise.race([
-      request,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('20 秒内未收到 ECDH 回包')), 20000);
-      }),
-    ]);
-    if (hasAttemptedNativeHook()) throw new Error('测试期间启用了收发 Hook，结果无效');
-
-    const describe = (value: unknown): string => {
-      if (typeof value === 'string') return `string(${value.length})`;
-      if (value instanceof Uint8Array || value instanceof ArrayBuffer) return `bytes(${value.byteLength})`;
-      if (Array.isArray(value)) return `array(${value.length})`;
-      if (value === null) return 'null';
-      return typeof value;
-    };
-    const fields: Record<string, string> = {};
-    const candidates: Buffer[] = [];
-    const inspect = (value: unknown, path: string, depth: number): void => {
-      if (Object.keys(fields).length >= 24) return;
-      fields[path] = describe(value);
-      if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
-        if (value.byteLength && value.byteLength <= 1024 * 1024) candidates.push(Buffer.from(
-          value instanceof Uint8Array ? value : new Uint8Array(value)
-        ));
-      } else if (typeof value === 'string' && value.length <= 65536 && /^0x(?:[a-f0-9]{2})+$/i.test(value)) {
-        candidates.push(Buffer.from(value.slice(2), 'hex'));
-      } else if (depth < 2 && value && typeof value === 'object') {
-        for (const key of Object.keys(value).slice(0, 12)) {
-          inspect((value as Record<string, unknown>)[key], `${path}.${key}`, depth + 1);
-        }
-      }
-    };
-    inspect(reply, 'reply', 0);
-    const status = (reply as { result?: unknown; errCode?: unknown; code?: unknown } | null)?.result
-      ?? (reply as { errCode?: unknown } | null)?.errCode ?? (reply as { code?: unknown } | null)?.code;
-    return { code: typeof status === 'number' ? status : null, fields, candidates };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
 
   const svc = getMsgService();
@@ -441,37 +360,24 @@ async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
   try {
     ret = await Promise.race([
       fn.call(svc, cmd, data),
-      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error(`SSO 超时（${cmd}，${Date.now() - started}ms）`)), 20000); })
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('QQ 请求超时')), 20000); })
     ]);
+  } catch (error) {
+    log(`SSO 请求未完成：${cmd}，耗时 ${Date.now() - started}ms，异常类型 ${error instanceof Error ? error.name : typeof error}`);
+    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+  const response = ret as { result?: unknown; errCode?: unknown; rsp?: unknown } | null;
+  const code = response?.result ?? response?.errCode;
+  if (typeof code === 'number' && code !== 0) {
+    log(`SSO 返回错误：${cmd}，错误码 ${code}，耗时 ${Date.now() - started}ms`);
+    throw new Error(`QQ 返回错误（${code}）`);
+  }
   const buf = pickBuffer(ret);
-  if (!buf) {
-    let detail = '';
-    try {
-      const o = ret as Record<string, unknown> | null;
-      if (o && typeof o === 'object') {
-        const rsp = o['rsp'];
-        let rspInfo = 'null';
-        if (rsp === null || rsp === undefined) {
-          rspInfo = String(rsp);
-        } else if (typeof rsp === 'object') {
-          const keys = Object.keys(rsp as object);
-          const types = keys.map(k => `${k}:${typeof (rsp as Record<string, unknown>)[k]}`).join(',');
-          rspInfo = `{${types}}`;
-        } else {
-          rspInfo = typeof rsp;
-        }
-        detail = `result=${String(o['result'])} errMsg=${String(o['errMsg'])} rsp=${rspInfo}`;
-      } else {
-        detail = `${typeof ret}: ${String(ret).slice(0, 200)}`;
-      }
-    } catch (err) {
-      detail = `解析返回失败：${String(err)}`;
-    }
-    log(`sendSso 返回结构异常（${Date.now() - started}ms）：${detail}`);
-    throw new Error(`SSO 回包为空（${detail}）`);
+  if (!buf?.length) {
+    log(`SSO 回包为空：${cmd}，rsp 类型 ${typeof response?.rsp}，耗时 ${Date.now() - started}ms`);
+    throw new Error('QQ 回包为空');
   }
   log(`sendSso 成功：${cmd} 回包 ${buf.length} 字节，耗时 ${Date.now() - started}ms`);
   return buf;
@@ -644,15 +550,4 @@ export async function recvForwardMsg(selfUid: string, resId: string): Promise<st
   const buf = await sendSso(pkt.cmd, pkt.data);
   log(`[kernel] 拉取合并转发 resId=${resId.slice(0, 24)}… 回包 ${buf.length} 字节`);
   return parseRecvResponse(buf);
-}
-
-/** 诊断：报告能不能拿到内核 */
-export function diagnose(): { ok: boolean; detail: string } {
-  const w = getWrapper();
-  if (!w) return { ok: false, detail: 'wrapper.node 没加载成功' };
-  const s = getSession();
-  if (!s) return { ok: false, detail: 'wrapper 拿到了，但 session 拿不到' };
-  const svc = getMsgService();
-  if (!svc) return { ok: false, detail: 'session 拿到了，但 msgService 拿不到' };
-  return { ok: true, detail: '内核通道就绪（wrapper.node + nt_1 session + msgService）' };
 }

@@ -44,10 +44,11 @@ function entityPath(accountId: string, kind: 'dm' | 'groups' | 'bindings', id: s
   return join(dir, `${id}.json`);
 }
 
-async function readJson<T>(path: string): Promise<T | null> {
-  try { return JSON.parse(await readFile(path, 'utf8')) as T; }
+async function readJson<T>(path: string, invalidJson?: T): Promise<T | null> {
+  try { return (JSON.parse(await readFile(path, 'utf8')) as T | null) ?? invalidJson ?? null; }
   catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (err instanceof SyntaxError && invalidJson !== undefined) return invalidJson;
     throw new Error(`读取联系人配置失败：${String(err)}`);
   }
 }
@@ -66,7 +67,7 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
 export async function getDmConfig(accountId: string, uin: string): Promise<DmConfig> {
   const id = requireId(uin);
   const stored = await readJson<Partial<DmConfig>>(entityPath(accountId, 'dm', id));
-  return { uin: id, enabled: stored?.enabled === true };
+  return { uin: id, enabled: stored?.uin === id && stored.enabled === true };
 }
 
 export async function setDmConfig(accountId: string, uin: string, enabled: boolean): Promise<DmConfig> {
@@ -74,6 +75,7 @@ export async function setDmConfig(accountId: string, uin: string, enabled: boole
   const account = requireId(accountId);
   if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
   return serialize(dmQueues, `${account}\u0000${id}`, async () => {
+    if (enabled && !(await getKeyBindings(account, [id])).length) throw new Error('请先绑定对方的公钥');
     const value = { uin: id, enabled };
     await atomicWrite(entityPath(account, 'dm', id), value);
     emit({ accountId: account, kind: 'dm', id });
@@ -87,12 +89,10 @@ export async function prepareDmConfig(accountId: string, uin: string): Promise<D
   const account = requireId(accountId);
   return serialize(dmQueues, `${account}\u0000${id}`, async () => {
     const path = entityPath(account, 'dm', id);
-    const stored = await readJson<Partial<DmConfig>>(path);
-    const enabled = stored?.enabled === true;
-    if (!enabled || (await getKeyBindings(account, [id])).some(binding => binding.uin === id)) {
-      return { uin: id, enabled };
-    }
-    const value = { uin: id, enabled: false };
+    const stored = await readJson<Partial<DmConfig>>(path, {});
+    const enabled = stored?.uin === id && stored?.enabled === true && (await getKeyBindings(account, [id])).length > 0;
+    const value = { uin: id, enabled };
+    if (stored === null || (stored.uin === id && stored.enabled === enabled)) return value;
     await atomicWrite(path, value);
     emit({ accountId: account, kind: 'dm', id });
     return value;
@@ -102,7 +102,7 @@ export async function prepareDmConfig(accountId: string, uin: string): Promise<D
 export async function getGroupConfig(accountId: string, groupId: string): Promise<GroupConfig> {
   const id = requireId(groupId);
   const stored = await readJson<Partial<GroupConfig>>(entityPath(accountId, 'groups', id));
-  const targets = Array.isArray(stored?.targets)
+  const targets = stored?.groupId === id && Array.isArray(stored.targets) && stored.targets.length <= MAX_PREPARE_GROUP_TARGETS
     ? [...new Set(stored.targets.filter(validId))]
     : [];
   return { groupId: id, targets };
@@ -115,9 +115,10 @@ export async function prepareGroupConfig(accountId: string, groupId: string, own
   const self = requireId(ownUin);
   return serialize(groupQueues, `${account}\u0000${group}`, async () => {
     const path = entityPath(account, 'groups', group);
-    const stored = await readJson<Partial<GroupConfig>>(path);
-    const original = Array.isArray(stored?.targets) ? [...new Set(stored.targets.filter(validId))] : [];
-    if (original.length > MAX_PREPARE_GROUP_TARGETS) throw new Error(`群聊目标数超过 ${MAX_PREPARE_GROUP_TARGETS}，未执行懒清理`);
+    const stored = await readJson<Partial<GroupConfig>>(path, {});
+    const rawTargets = Array.isArray(stored?.targets) ? stored.targets : [];
+    const original = stored?.groupId === group && rawTargets.length <= MAX_PREPARE_GROUP_TARGETS
+      ? [...new Set(rawTargets.filter(validId))] : [];
     const peers = original.filter(target => target !== self);
     const bound = new Set<string>();
     for (let offset = 0; offset < peers.length; offset += MAX_BATCH) {
@@ -125,7 +126,7 @@ export async function prepareGroupConfig(accountId: string, groupId: string, own
       for (const binding of await getKeyBindings(account, batch)) bound.add(binding.uin);
     }
     const targets = original.filter(target => target === self || bound.has(target));
-    if (targets.length !== original.length) {
+    if (stored !== null && (stored.groupId !== group || !Array.isArray(stored.targets) || targets.length !== rawTargets.length)) {
       const value = { groupId: group, targets };
       await atomicWrite(path, value);
       emit({ accountId: account, kind: 'group', id: group });
@@ -141,9 +142,11 @@ export async function setGroupTarget(accountId: string, groupId: string, uin: st
   if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
   const account = requireId(accountId);
   return serialize(groupQueues, `${account}\u0000${group}`, async () => {
+    if (enabled && member !== account && !(await getKeyBindings(account, [member])).length) throw new Error('请先绑定该成员的公钥');
     const path = entityPath(accountId, 'groups', group);
-    const stored = await readJson<Partial<GroupConfig>>(path);
-    const targets = new Set(Array.isArray(stored?.targets) ? stored.targets.filter(validId) : []);
+    const stored = await readJson<Partial<GroupConfig>>(path, {});
+    const targets = new Set(stored?.groupId === group && Array.isArray(stored.targets) && stored.targets.length <= MAX_PREPARE_GROUP_TARGETS
+      ? stored.targets.filter(validId) : []);
     if (enabled) targets.add(member);
     else targets.delete(member);
     const value = { groupId: group, targets: [...targets] };
@@ -163,8 +166,9 @@ export async function getKeyBindings(accountId: string, uins: string[]): Promise
   return found.filter((value): value is KeyBinding => value !== null);
 }
 
-export async function listKeyBindings(accountId: string, cursor?: string, limit = 100): Promise<KeyBindingPage> {
+export async function listKeyBindings(accountId: string, cursor?: string, limit = 100, query = ''): Promise<KeyBindingPage> {
   const after = cursor === undefined || cursor === '' ? '' : requireId(cursor);
+  if (typeof query !== 'string' || !/^\d*$/.test(query)) throw new Error('QQ 号筛选只接受数字');
   const size = Number.isInteger(limit) ? Math.max(1, Math.min(MAX_BATCH, limit)) : 100;
   const bindingsDir = join(accountsDir, requireId(accountId), 'bindings');
   mkdirSync(bindingsDir, { recursive: true });
@@ -175,7 +179,7 @@ export async function listKeyBindings(accountId: string, cursor?: string, limit 
     for await (const entry of dir) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const uin = entry.name.slice(0, -5);
-      if (!validId(uin) || (after && uin <= after)) continue;
+      if (!validId(uin) || !uin.includes(query) || uin <= after) continue;
       // Keep only the smallest `size + 1` IDs seen; opendir streams entries
       // without materializing or sorting the entire directory.
       candidates.push(uin);
