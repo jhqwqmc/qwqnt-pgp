@@ -476,7 +476,7 @@ function renderContactsSection(): HTMLElement {
       <form class="qwqnt-pgp-row" id="qwqnt-pgp-keyserver-search"><input type="text" aria-label="搜索密钥服务器" required placeholder="邮箱或指纹"><button class="q-button q-button--small q-button--secondary" type="submit">搜索</button></form>
       <div id="qwqnt-pgp-keyserver-results"></div>
     <div class="qwqnt-pgp-network-github">
-      <div>GitHub 公钥</div>
+      <div>GitHub</div>
       <form class="qwqnt-pgp-row" id="qwqnt-pgp-github-search"><input type="text" aria-label="GitHub 用户名" required placeholder="用户名"><button class="q-button q-button--small q-button--secondary" type="submit">搜索</button></form>
       <div id="qwqnt-pgp-github-results"></div>
     </div>

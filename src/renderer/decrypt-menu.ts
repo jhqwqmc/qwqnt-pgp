@@ -19,6 +19,7 @@ export function startDecryptMenu(): void {
   window.addEventListener('qwqnt-pgp:config-updated', refreshCurrentMenu);
   window.addEventListener('qwqnt-pgp:account-changed', clearContextOwner);
   const onPointerDown = (event: MouseEvent | PointerEvent): void => {
+    if (targetOnPath(event)?.closest(`#${ITEM_ID}`)) return;
     if (event.button !== 2) {
       if (event.composedPath().some(node => node instanceof Element && !!node.closest('.q-context-menu'))) return;
       clearContextOwner();
@@ -30,6 +31,7 @@ export function startDecryptMenu(): void {
   document.addEventListener('mousedown', onPointerDown, true);
   document.addEventListener('contextmenu', event => {
     const target = targetOnPath(event);
+    if (target?.closest(`#${ITEM_ID}`)) return;
     // QQ may move focus to its overlay before dispatching contextmenu.
     if (!target?.closest('.q-context-menu') || !contextOwner?.deref()?.isConnected) captureContextOwner(event);
     if (getCached()?.autoDecrypt !== false) return;
@@ -81,15 +83,11 @@ function hideMenuItems(): void {
 
 function captureContextOwner(event: Event): void {
   clearContextOwner();
-  if (getCached()?.autoDecrypt === true) {
-    hideMenuItems();
-    return;
-  }
+  if (getCached()?.autoDecrypt === true) return;
   const content = targetOnPath(event)?.closest(MESSAGE_CONTENT_SELECTOR);
   const owner = content?.closest('.message') ?? content?.closest('.message-native') ?? null;
   contextOwner = owner ? new WeakRef(owner) : null;
   contextAt = Date.now();
-  if (!owner) hideMenuItems();
 }
 
 function refreshCurrentMenu(): void {
@@ -177,17 +175,22 @@ function attachMenuItem(): void {
     if (!label.parentNode) content.append(label);
   }
   item.setAttribute('aria-label', '解密');
-  item.addEventListener('click', event => {
-    event.preventDefault();
-    event.stopPropagation();
+  const decrypt = (): void => {
     const boundOwner = menuOwners.get(menu);
     const targetOwner = boundOwner?.deref();
     if (getCached()?.autoDecrypt !== false || boundOwner !== contextOwner ||
       Date.now() - contextAt > OWNER_TIMEOUT_MS || !targetOwner?.isConnected || inFlight.has(targetOwner)) return;
-    menu.remove();
-    contextOwner = null;
     inFlight.add(targetOwner);
     void manualDecrypt(targetOwner).catch(() => toast('解密失败')).finally(() => inFlight.delete(targetOwner));
+    queueMicrotask(() => {
+      if (boundOwner !== contextOwner || !menu.isConnected || !menu.getClientRects().length) return;
+      item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    });
+  };
+  item.addEventListener('click', decrypt);
+  item.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    decrypt();
   });
   sampleRoot.insertAdjacentElement('afterend', item);
 }

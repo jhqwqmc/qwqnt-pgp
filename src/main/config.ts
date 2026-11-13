@@ -6,7 +6,7 @@ import { initEntityStorage } from './entity-storage';
 import { log } from './log';
 
 export const DEFAULT_CONFIG: PgpConfig = {
-  autoDecrypt: true,
+  autoDecrypt: false,
   sendPolicy: 'manual',
   hotkey: 'Ctrl+/',
   gpgPath: '',
