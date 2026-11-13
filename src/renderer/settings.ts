@@ -354,7 +354,7 @@ function renderConfigSection(): HTMLElement {
   sec.className = 'qwqnt-pgp-sec';
   const cfg = config!;
   sec.innerHTML = `
-    <details class="qwqnt-pgp-details" open>
+    <details class="qwqnt-pgp-details">
       <summary>基本设置</summary><div class="qwqnt-pgp-details-body">
         <div class="qwqnt-pgp-row qwqnt-pgp-bool"><label id="qwqnt-pgp-autoDecrypt-label">自动解密</label><input id="qwqnt-pgp-autoDecrypt" class="qwqnt-pgp-switch-input" type="checkbox" aria-hidden="true" tabindex="-1" ${cfg.autoDecrypt ? 'checked' : ''}><div id="qwqnt-pgp-autoDecrypt-switch" class="q-switch qwqnt-pgp-switch${cfg.autoDecrypt ? ' is-active' : ''}" role="switch" tabindex="0" aria-labelledby="qwqnt-pgp-autoDecrypt-label" aria-checked="${cfg.autoDecrypt}"><span class="q-switch__handle"></span></div></div>
         <div class="qwqnt-pgp-row"><label>发送策略</label><select id="qwqnt-pgp-sendPolicy" class="qwqnt-pgp-select">
@@ -455,7 +455,7 @@ function renderContactsSection(): HTMLElement {
   const sec = document.createElement('section');
   sec.className = 'qwqnt-pgp-sec';
   sec.innerHTML = `
-    <details class="qwqnt-pgp-details" open><summary>本机公钥</summary><div class="qwqnt-pgp-details-body">
+    <details class="qwqnt-pgp-details"><summary>本机公钥</summary><div class="qwqnt-pgp-details-body">
       <div class="qwqnt-pgp-contact-panel">
         <div class="qwqnt-pgp-contact-header">
           <input class="qwqnt-pgp-field" id="qwqnt-pgp-local-search" type="text" aria-label="筛选本机公钥" placeholder="筛选公钥">
@@ -465,7 +465,7 @@ function renderContactsSection(): HTMLElement {
         <span class="qwqnt-pgp-hint" id="qwqnt-pgp-keyState" role="status"></span>
       </div>
     </div></details>
-    <details class="qwqnt-pgp-details" open><summary>已绑定 QQ 号</summary><div class="qwqnt-pgp-details-body">
+    <details class="qwqnt-pgp-details"><summary>已绑定 QQ 号</summary><div class="qwqnt-pgp-details-body">
       <div class="qwqnt-pgp-contact-panel">
         <input class="qwqnt-pgp-field" id="qwqnt-pgp-binding-search" type="text" inputmode="numeric" aria-label="筛选已绑定 QQ 号" placeholder="筛选 QQ 号">
         <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-binding-list" tabindex="0" aria-label="已绑定 QQ 号列表"><div class="qwqnt-pgp-item">加载绑定…</div></div>

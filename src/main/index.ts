@@ -3,6 +3,8 @@
  * 提供配置、日志、GnuPG 和 QQ 内核 IPC 接口。
  */
 import { app, ipcMain as electronIpcMain, webContents } from 'electron';
+import { gzip } from 'node:zlib';
+import { promisify } from 'node:util';
 import { initConfig, getConfig, saveConfig, getConfigPath, readDebugConfig } from './config';
 import { getDmConfig, setDmConfig, getGroupConfig, prepareDmConfig, prepareGroupConfig, setGroupTarget, getKeyBindings, listKeyBindings, setKeyBinding, onDataChanged } from './entity-storage';
 import { initLog, log, logLine, isDebugLogEnabled } from './log';
@@ -14,6 +16,7 @@ import { chooseOwnKey } from './identity';
 import { searchGithub } from './keys';
 import { sendArk, sendSso, getSelfLoginInfo, getGroupMembers, recvForwardMsg, resolveUin, getMessageRecord, prepareSsoOffsets } from './kernel';
 import { buildUploadPacket, parseUploadResponse, type ForwardNode } from './forward';
+import { FORWARD_TEXT_TOO_LARGE } from '../shared/forward-card';
 import { AccountContextRegistry, type AccountContext } from './account-context';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertAccountToken } from './scoped-ipc';
@@ -224,13 +227,24 @@ async function getOwnKeyIDForSend(accountId: string): Promise<string> {
   return ownKeyResolution.get(accountId)!;
 }
 
+const gzipText = promisify(gzip);
+
 async function uploadForward(opts: { selfUid: string; nodes: ForwardNode[]; groupId: number }): Promise<{ resId: string }> {
   const context = accountScope.getStore();
   if (!context || context.selfUid !== opts.selfUid) throw new Error('当前发送账号已切换');
   assertNativeAccount(context);
+  const compressedText = await gzipText(opts.nodes.map(node => node.text).join(''));
+  if (compressedText.length > 25_000) throw new Error(FORWARD_TEXT_TOO_LARGE);
+  assertNativeAccount(context);
   const pkt = buildUploadPacket(opts.selfUid, opts.nodes, opts.groupId);
-  log(`上传合并转发：${opts.nodes.length} 条，包 ${pkt.data.length} 字节`);
-  return parseUploadResponse(await sendSso(pkt.cmd, pkt.data));
+  const textBytes = opts.nodes.reduce((total, node) => total + Buffer.byteLength(node.text, 'utf8'), 0);
+  const sizes = `${opts.nodes.length} 条，正文 UTF-8 ${textBytes} B，序列化 ${pkt.encodedBytes} B，gzip ${pkt.gzipBytes} B，提交给 QQ 内核 ${pkt.data.length} B`;
+  log(`上传合并转发：${sizes}`);
+  try {
+    return parseUploadResponse(await sendSso(pkt.cmd, pkt.data));
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}（${sizes}）`, { cause: error });
+  }
 }
 
 interface PluginLike {

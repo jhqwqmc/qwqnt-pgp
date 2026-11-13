@@ -1,6 +1,6 @@
-import { buildCiphertextCard, CIPHERTEXT_SLICE_LENGTH } from '../shared/forward-card';
+import { buildCiphertextCard } from '../shared/forward-card';
 /**
- * 发送模块：加密 → 切片 → 发「伪造聊天记录卡片」。
+ * 发送模块：加密 → 发「伪造聊天记录卡片」。
  * 通过 preload 暴露的 sendArk 接口发送卡片，不在 renderer 中调用未公开的内核桥接对象。
  */
 import { log } from './log';
@@ -75,23 +75,6 @@ function randomUUID(): string {
   });
 }
 
-/**
- * 在本地构造「聊天记录」卡片。
- * resId 由协议端上传后拿到，点开才看得到内容。
- */
-function buildFakeForwardCard(slices: string[], resId: string): string {
-  return buildCiphertextCard(slices.length, resId, randomUUID());
-}
-
-/** 把长文本切成若干段 */
-export function sliceText(text: string, limit: number): string[] {
-  const max = Math.max(200, Math.floor(limit) || 3000);
-  const out: string[] = [];
-  // 直接按原字符串切分，不能 split/join 行：那会丢空行和末尾换行，破坏密文逐字节还原。
-  for (let i = 0; i < text.length; i += max) out.push(text.slice(i, i + max));
-  return out;
-}
-
 /** 自动挑自己的公钥（有私钥的那把） */
 async function autoOwnKeyID(): Promise<string> {
   try {
@@ -154,17 +137,17 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
     } else {
       peerUin = getUinByUid(peer.peerUid) || await resolvePeerUin(peer.peerUid);
       assertSendAccount(account);
-      if (!isNumericUin(peerUin)) return { ok: false, slices: 0, error: '无法解析私聊对象数字 QQ 号，已阻止发送' };
+      if (!isNumericUin(peerUin)) return { ok: false, error: '无法解析私聊对象数字 QQ 号，已阻止发送' };
       const dm = await getDmConfig(peerUin);
       assertSendAccount(account);
-      if (!dm.enabled) return { ok: false, slices: 0, error: '此私聊的 PGP 加密开关未开启' };
+      if (!dm.enabled) return { ok: false, error: '此私聊的 PGP 加密开关未开启' };
     }
     const bindingUins = peer.chatType === 2 ? groupTargets : [peerUin];
     const bindings = await getKeyBindings(bindingUins);
     assertSendAccount(account);
     if (peer.chatType === 2) {
       if (!groupTargets.some(uin => uin !== selfUin && bindings.some(binding => binding.uin === uin && binding.keyID.trim()))) {
-        return { ok: false, slices: 0, error: '群聊加密至少需要开启一位已绑定公钥的其他成员；仅选自己不会加密发送' };
+        return { ok: false, error: '群聊加密至少需要开启一位已绑定公钥的其他成员；仅选自己不会加密发送' };
       }
     }
 
@@ -177,7 +160,7 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
     }
     log(`收件人：${JSON.stringify(recipients)}（会话 ${JSON.stringify(peer)}）`);
     if (!recipients.length) {
-      return { ok: false, slices: 0, error: '没有可用的收件人公钥：请先设好自己的公钥，或在群里勾选要加密的成员' };
+      return { ok: false, error: '没有可用的收件人公钥：请先设好自己的公钥，或在群里勾选要加密的成员' };
     }
 
     if (peer.chatType === 2) {
@@ -186,7 +169,7 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
         .map(uin => bindings.find(item => isNumericUin(item.uin) && item.uin === uin)?.keyID)
         .filter((keyID): keyID is string => Boolean(keyID?.trim()));
       if (!requiredKeys.some(keyID => recipients.includes(keyID))) {
-        return { ok: false, slices: 0, error: '显式收件人未包含任何已开启群成员的公钥，已阻止发送' };
+        return { ok: false, error: '显式收件人未包含任何已开启群成员的公钥，已阻止发送' };
       }
     }
 
@@ -194,40 +177,39 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
       const binding = bindings.find(item => isNumericUin(item.uin) && item.uin === peerUin);
       const hasPeerKey = binding?.keyID && recipients.includes(binding.keyID);
       if (!hasPeerKey) {
-        return { ok: false, slices: 0, error: `私聊对象 ${peer.name || peerUin || ''} 没有已绑定的公钥；请先按数字 QQ 号绑定对方公钥` };
+        return { ok: false, error: `私聊对象 ${peer.name || peerUin || ''} 没有已绑定的公钥；请先按数字 QQ 号绑定对方公钥` };
       }
     }
     const armored = await window.QwQNTPgp.encrypt(plaintext, recipients);
     assertSendAccount(account);
-    const slices = sliceText(armored, CIPHERTEXT_SLICE_LENGTH);
-    log(`加密完成：${armored.length} 字符，切成 ${slices.length} 段`);
+    log(`加密完成：${armored.length} 字符`);
     return await sendFakeForward(
       peer,
-      slices,
+      armored,
       context.selfUid,
       account
     );
   } catch (err) {
-    return { ok: false, slices: 0, error: String(err instanceof Error ? err.message : err) };
+    return { ok: false, error: String(err instanceof Error ? err.message : err) };
   }
 }
 
 /** 伪造卡片：先协议端上传拿 resId，再本地拼 ark 发给对方 */
 async function sendFakeForward(
   peer: PeerTarget,
-  slices: string[],
+  text: string,
   selfUid: string,
   account: SendAccount
 ): Promise<SendResult> {
   const groupId = peer.chatType === 2 ? Number(peer.peerUid) || 0 : 0;
   const now = Math.floor(Date.now() / 1000);
-  const nodes = slices.map(text => ({
+  const nodes = [{
     uin: 0,
     name: '\u200B',
     groupId: groupId || undefined,
     time: now,
     text
-  }));
+  }];
 
   let resId: string;
   try {
@@ -241,21 +223,21 @@ async function sendFakeForward(
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     log(`上传合并转发失败：${reason}`);
-    return { ok: false, slices: 0, error: `上传聊天记录失败：${reason}` };
+    return { ok: false, error: `上传聊天记录失败：${reason}` };
   }
 
-  const card = buildFakeForwardCard(slices, resId);
-  log(`伪造卡片：目标=${JSON.stringify(peer)} 段数=${slices.length} 卡片=${card.slice(0, 600)}`);
+  const card = buildCiphertextCard(1, resId, randomUUID());
+  log(`伪造卡片：目标=${JSON.stringify(peer)} 卡片=${card.slice(0, 600)}`);
   try {
     assertSendAccount(account);
     const r = await window.QwQNTPgp.sendArk({ chatType: peer.chatType, peerUid: peer.peerUid }, card);
     assertSendAccount(account);
     log(`伪造卡片发送结果：ok=${r.ok}${r.error ? ` err=${r.error}` : ''}`);
     if (!r.ok) {
-      return { ok: false, slices: 0, error: `伪造卡片发送失败：${r.error ?? ''}` };
+      return { ok: false, error: `伪造卡片发送失败：${r.error ?? ''}` };
     }
-    return { ok: true, slices: slices.length };
+    return { ok: true};
   } catch (err) {
-    return { ok: false, slices: 0, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

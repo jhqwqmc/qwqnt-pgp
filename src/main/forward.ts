@@ -86,7 +86,7 @@ function writeForwardNode(writer: Buffer[], node: ForwardNode, selfUid: string):
   });
 }
 
-export function buildUploadPacket(selfUid: string, nodes: ForwardNode[], groupUin: number): { cmd: string; data: Buffer } {
+export function buildUploadPacket(selfUid: string, nodes: ForwardNode[], groupUin: number) {
   if (!selfUid.trim()) throw new Error('上传合并转发需要登录 UID');
   if (!nodes.length) throw new Error('合并转发至少需要一条消息');
   if (groupUin !== 0 && (!Number.isSafeInteger(groupUin) || groupUin < 0)) {
@@ -103,7 +103,8 @@ export function buildUploadPacket(selfUid: string, nodes: ForwardNode[], groupUi
       for (const node of nodes) message(records, 1, record => writeForwardNode(record, node, selfUid));
     });
   });
-  const payload = gzipSync(Buffer.concat(content));
+  const encoded = Buffer.concat(content);
+  const payload = gzipSync(encoded);
 
   const request: Buffer[] = [];
   message(request, 2, info => {
@@ -117,7 +118,7 @@ export function buildUploadPacket(selfUid: string, nodes: ForwardNode[], groupUi
     number(settings, 2, 1);
     number(settings, 3, 7);
   });
-  return { cmd: CMD_SEND_LONG_MSG, data: Buffer.concat(request) };
+  return { cmd: CMD_SEND_LONG_MSG, data: Buffer.concat(request), encodedBytes: encoded.length, gzipBytes: payload.length };
 }
 
 export function buildRecvPacket(selfUid: string, resId: string): { cmd: string; data: Buffer } {

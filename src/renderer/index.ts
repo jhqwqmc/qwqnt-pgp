@@ -15,18 +15,9 @@ import { startDecryptMenu } from './decrypt-menu';
 const rendererKey = Symbol.for('qwqnt-pgp.renderer');
 const rendererGlobal = window as unknown as Record<symbol, boolean | undefined>;
 
-// 临时控制台入口，用于生成待粘贴到 QQ 的定长文本。
-function makeLengthTestText(length: number): string {
-  if (!Number.isInteger(length) || length < 1 || length > 1_000_000) {
-    throw new RangeError('请输入 1 到 1000000 之间的整数');
-  }
-  return '1'.repeat(length);
-}
-
 async function bootstrap(): Promise<void> {
   if (rendererGlobal[rendererKey]) return;
   rendererGlobal[rendererKey] = true;
-  Object.defineProperty(window, 'pgpLengthTest', { value: makeLengthTestText, configurable: true });
   void initRendererLog().then(() => log('renderer 启动'));
   watchSettings();
   setAutoDecrypt(false);

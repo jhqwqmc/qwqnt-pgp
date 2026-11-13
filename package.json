@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/qwqnt-community/types/main/plugin.schema.json",
   "name": "qwqnt-pgp",
   "version": "0.2.2",
-  "description": "QwQNT 的 PGP 加密插件：基于 GnuPG 的端到端加密，支持合并转发发送、文本切片、密钥与联系人管理",
+  "description": "QwQNT 的 PGP 加密插件：基于 GnuPG 的端到端加密，支持合并转发发送、密钥与联系人管理",
   "type": "module",
   "scripts": {
     "lint": "oxlint src --tsconfig ./tsconfig.json --type-aware --type-check",

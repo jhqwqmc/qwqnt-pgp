@@ -13,7 +13,6 @@ export interface PgpConfig {
   sendPolicy: SendPolicy;
   /** 手动发送的快捷键（如 Ctrl+/、Alt+Q） */
   hotkey: string;
-  /** 单条文本切片长度（字符数） */
   /** gpg 可执行文件路径，空 = 自动探测 */
   gpgPath: string;
   /** gpg homedir，空 = 系统默认 */
@@ -100,8 +99,6 @@ export interface DecryptResult {
 
 export interface SendResult {
   ok: boolean;
-  /** 实际发送的切片数 */
-  slices: number;
   /** 素材消息 ID（伪造转发只有一条卡片，这里是卡片 msgId） */
   msgId?: string;
   /** 失败原因 */

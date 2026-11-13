@@ -1,4 +1,4 @@
-export const CIPHERTEXT_SLICE_LENGTH = 3000;
+export const FORWARD_TEXT_TOO_LARGE = '字数超过上限，无法发送';
 
 export function buildCiphertextCard(total: number, resId: string, id: string): string {
   return JSON.stringify({

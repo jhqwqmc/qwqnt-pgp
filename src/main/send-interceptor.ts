@@ -1,4 +1,4 @@
-import { buildCiphertextCard, CIPHERTEXT_SLICE_LENGTH } from '../shared/forward-card';
+import { buildCiphertextCard } from '../shared/forward-card';
 import { randomUUID } from 'node:crypto';
 import type { KeyBinding, PgpConfig } from '@/shared/types';
 
@@ -263,20 +263,18 @@ export function installAutoSendInterceptor(
       ensureCurrent();
       const self = await deps.getSelfInfo(accountId, context.selfUid);
       if (!self?.uid || !numericUin(self.uin)) throw new Error('无法读取本机账号信息，已阻止明文发送');
-      const slices = sliceText(armored, CIPHERTEXT_SLICE_LENGTH);
-      if (!slices.length) throw new Error('加密结果为空，已阻止明文发送');
       const now = Math.floor(Date.now() / 1000);
-      const nodes = slices.map(text => ({
+      const nodes = [{
         uin: '0',
         name: '\u200B',
         ...(groupId ? { groupId } : {}),
         time: now,
-        text
-      }));
+        text: armored
+      }];
       const uploaded = await deps.uploadForward({ selfUid: self.uid, nodes, groupId });
       ensureCurrent();
       if (!uploaded?.resId) throw new Error('服务器没有返回转发记录 ID，已阻止明文发送');
-      const card = buildCiphertextCard(slices.length, uploaded.resId, randomUUID());
+      const card = buildCiphertextCard(1, uploaded.resId, randomUUID());
       const arkElement = { elementId: '', elementType: 10, arkElement: { bytesData: card } };
       const cloned = cloneEnvelope(originalEnvelope);
       const clonedRequest = cloned[1] as AnyObj;
@@ -359,13 +357,6 @@ function normalizePeer(raw: unknown): Peer | null {
 
 function numericUin(value: unknown): value is string {
   return typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
-}
-
-function sliceText(text: string, limit: number): string[] {
-  const max = Math.max(200, Math.floor(limit) || 3000);
-  const slices: string[] = [];
-  for (let offset = 0; offset < text.length; offset += max) slices.push(text.slice(offset, offset + max));
-  return slices;
 }
 
 function errorText(error: unknown): string {

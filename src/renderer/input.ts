@@ -9,6 +9,7 @@ import { getCurrentPeer } from './store';
 import { getActiveAccountId, getCached, loadAccountContext, loadConfig } from './config-cache';
 import { sendEncrypted } from './send';
 import { toast } from './toast';
+import { FORWARD_TEXT_TOO_LARGE } from '../shared/forward-card';
 import type { SendPolicy } from '@/shared/types';
 
 const EDITOR_SELECTORS = [
@@ -141,6 +142,8 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
   void loadAccountContext().then(context => {
     if (epoch !== inputAccountEpoch || !context || (info.accountId && info.accountId !== context.accountId) ||
       getActiveAccountId() !== context.accountId || getCurrentPeer()?.peerUid !== info.peerUid) return;
+    const tooLarge = info.error.includes(FORWARD_TEXT_TOO_LARGE);
+    if (tooLarge) toast(FORWARD_TEXT_TOO_LARGE);
     const editor = document.querySelector<HTMLElement>('.chat-input-area .ProseMirror, .chat-input-area [contenteditable="true"], .chat-input .ProseMirror, .chat-input [contenteditable="true"]');
     if (!editor) return;
     window.requestAnimationFrame(() => {
@@ -153,7 +156,7 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
           editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
           editor.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        toast('自动加密发送失败，明文已放回输入框');
+        if (!tooLarge) toast('自动加密发送失败，明文已放回输入框');
         log(`自动发送失败已恢复草稿 peer=${info.peerUid} msgId=${info.msgId} error=${info.error}`);
       } catch (err) { log(`恢复自动发送草稿失败：${String(err)}`); }
     });
@@ -229,7 +232,7 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
       if (getEditorText(editor) === plaintext) clearEditor(editor);
       toast(`已发送`);
     } else {
-      toast(res.error ?? '发送失败');
+      toast(res.error?.includes(FORWARD_TEXT_TOO_LARGE) ? FORWARD_TEXT_TOO_LARGE : res.error ?? '发送失败');
       log(`发送失败：${res.error}`);
     }
   } catch (err) {
