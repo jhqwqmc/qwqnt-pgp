@@ -1,0 +1,95 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: ${{ startsWith(github.event.head_commit.message, '[ci build]') }}
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.repository }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Verify commit prefix
+        id: commit
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if ($env:COMMIT_MESSAGE.StartsWith('[ci build]', [StringComparison]::Ordinal)) {
+            'eligible=true' >> $env:GITHUB_OUTPUT
+          }
+
+      - uses: actions/checkout@v4
+        if: steps.commit.outputs.eligible == 'true'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        if: steps.commit.outputs.eligible == 'true'
+        with:
+          node-version: 24
+
+      - name: Check release version
+        id: version
+        if: steps.commit.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw 'package.json must contain a stable semantic version.'
+          }
+          $tag = "v$version"
+          $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/tags?per_page=100" --jq '.[].name'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list tags.' }
+          $releases = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list releases.' }
+          if ($tag -in $tags -or $tag -in $releases) {
+            Write-Host "$tag already exists. Skipping."
+            exit 0
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Require immutable releases
+        if: steps.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+        run: |
+          if (!$env:GH_TOKEN) { throw 'Set RELEASE_SETTINGS_TOKEN with repository Administration read permission.' }
+          $enabled = gh api "repos/$env:GITHUB_REPOSITORY/immutable-releases" --jq '.enabled'
+          if ($LASTEXITCODE -ne 0 -or $enabled -ne 'true') {
+            throw 'Could not verify that immutable releases are enabled.'
+          }
+
+      - uses: pnpm/action-setup@v4
+        if: steps.version.outputs.tag != ''
+
+      - name: Build ZIP
+        if: steps.version.outputs.tag != ''
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm build
+
+      - name: Publish release
+        if: steps.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create $env:RELEASE_TAG qwqnt-pgp.zip --draft --target $env:GITHUB_SHA --title $env:RELEASE_TAG --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create draft and upload ZIP.' }
+          gh release edit $env:RELEASE_TAG --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish draft.' }
+          $immutable = gh release view $env:RELEASE_TAG --json isImmutable --jq '.isImmutable'
+          if ($LASTEXITCODE -ne 0 -or $immutable -ne 'true') { throw 'Could not verify release immutability.' }

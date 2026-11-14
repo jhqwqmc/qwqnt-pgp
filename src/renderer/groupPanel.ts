@@ -4,8 +4,9 @@
  */
 import { log } from './log';
 import { getCurrentPeer, getCurAio, getUinByUid, resolvePeerUin, setUidUin } from './store';
-import { getActiveAccountId, getGroupConfig, getKeyBindings, loadAccountContext, prepareGroupConfig, prepareDmConfig, setGroupTarget } from './config-cache';
-import { getDmConfig, getKeyBinding, setDmConfig } from './config-cache';
+import { getActiveAccountId, getGroupConfig, getKeyBindings, loadAccountContext, prepareGroupConfig, setGroupTarget } from './config-cache';
+import { toast } from './toast';
+import { isDirectChat } from '../shared/chat-type';
 
 const PANEL_ID = 'qwqnt-pgp-group-panel';
 const STYLE_ID = 'qwqnt-pgp-group-style';
@@ -125,6 +126,7 @@ async function prepareCurrentOpenChat(peer = getCurrentPeer()): Promise<void> {
   if (preparedOpenChatEpoch === epoch || preparingOpenChatEpoch === epoch) return;
   preparingOpenChatEpoch = epoch;
   try {
+    if (peer.chatType !== 2) return;
     const uin = getUinByUid(peer.peerUid) || (isNumericUin(peer.peerUid) ? peer.peerUid : await resolvePeerUin(peer.peerUid));
     if (!isNumericUin(uin) || epoch !== openChatEpoch || key !== openChatKey
       || !isCurrentAccount(accountId, accountEpoch)
@@ -132,8 +134,7 @@ async function prepareCurrentOpenChat(peer = getCurrentPeer()): Promise<void> {
     // Mark before invoking the RPC: repeated DOM mutations during the request
     // must not schedule a second cleanup for this open epoch.
     preparedOpenChatEpoch = epoch;
-    if (peer.chatType === 2) await prepareGroupConfig(uin);
-    else await prepareDmConfig(uin);
+    await prepareGroupConfig(uin);
     if (epoch !== openChatEpoch || key !== openChatKey || !isCurrentAccount(accountId, accountEpoch)) return;
   } catch (err) {
     log(`打开会话时校验 PGP 配置失败：${String(err)}`);
@@ -216,6 +217,14 @@ function looksLikeUid(value: string): boolean {
   return /^u_[\w-]+$/i.test(value);
 }
 
+export function refreshButton(label: string): string {
+  return `
+    <button class="qwqnt-pgp-group-refresh" type="button" aria-label="${label}" title="${label}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5"/><path d="M5.4 9a7 7 0 0 1 11.5-3.3L20 9M4 15l3.1 3.3A7 7 0 0 0 18.6 15"/></svg>
+    </button>
+  `;
+}
+
 function createPanel(): HTMLElement {
   injectGroupStyle();
   const panel = document.createElement('div');
@@ -224,9 +233,7 @@ function createPanel(): HTMLElement {
   panel.innerHTML = `
       <div class="qwqnt-pgp-group-head">
         <span>加密成员</span>
-        <button class="qwqnt-pgp-group-refresh" type="button" aria-label="刷新成员" title="刷新成员">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5"/><path d="M5.4 9a7 7 0 0 1 11.5-3.3L20 9M4 15l3.1 3.3A7 7 0 0 0 18.6 15"/></svg>
-        </button>
+        ${refreshButton('刷新成员')}
       </div>
       <div class="qwqnt-pgp-group-content">
         <div class="qwqnt-pgp-group-tools">
@@ -246,7 +253,7 @@ function createPanel(): HTMLElement {
   return panel;
 }
 
-function injectGroupStyle(): void {
+export function injectGroupStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
@@ -273,8 +280,12 @@ function injectGroupStyle(): void {
     /* Keep QQ's q-switch geometry and handle styling; only reserve its row space. */
     .qwqnt-pgp-member-switch { flex:none; }
     .qwqnt-pgp-member-switch[aria-disabled=true] { opacity:.5; cursor:not-allowed; }
-    #${DM_ID} { position:relative; }
-    #${DM_ID}:not(:last-child)::after { content:''; position:absolute; inset-inline:16px; bottom:0; border-bottom:1px solid var(--border_level_1,rgba(127,127,127,.14)); pointer-events:none; }
+    #${DM_ID} { position:relative; user-select:none; cursor:default; }
+    #${DM_ID}:has(+ .q-list-item)::before { content:''; position:absolute; inset-inline:16px; inset-block-end:0; block-size:1px; background:var(--border_level_1,rgba(127,127,127,.12)); pointer-events:none; }
+    #${DM_ID} .q-switch[aria-disabled=true] { opacity:.55; cursor:not-allowed; }
+    .qwqnt-pgp-group-list { scrollbar-width:thin !important; scrollbar-color:var(--text_tertiary,rgba(127,127,127,.55)) transparent; }
+    .qwqnt-pgp-group-list::-webkit-scrollbar { display:block !important; width:6px !important; }
+    .qwqnt-pgp-group-list::-webkit-scrollbar-thumb { background:var(--text_tertiary,rgba(127,127,127,.55)); border-radius:6px; }
   `;
   document.head.append(style);
 }
@@ -613,7 +624,7 @@ const DM_ID = 'qwqnt-pgp-dm-item';
 let dmToggleStarted = false;
 let dmRenderVersion = 0;
 
-/** 私聊详情面板加「PGP 加密」开关（默认关；没绑定公钥就灰） */
+/** 在私聊详情控制加密状态。 */
 export function startDmToggle(): void {
   if (dmToggleStarted) return;
   dmToggleStarted = true;
@@ -629,6 +640,7 @@ export function startDmToggle(): void {
   const observer = new MutationObserver(mutations => {
     if (mutations.some(m => {
       const target = m.target instanceof Element ? m.target : m.target.parentElement;
+      if (target?.closest(`#${DM_ID}`)) return false;
       return !!target?.closest('.more-panel, .aio .header, .aio-header, .chat-header, .header-container, header')
         || [...m.addedNodes].some(n => n instanceof Element && (n.matches('.more-panel, .side-panel, .aio .header, .aio-header, .chat-header, .header-container, header') || !!n.querySelector('.more-panel, .side-panel')));
     })) schedule();
@@ -644,10 +656,7 @@ export function startDmToggle(): void {
   });
   window.addEventListener('qwqnt-pgp:data-changed', event => {
     const changed = (event as CustomEvent<{ accountId?: string; kind?: string; id?: string }>).detail;
-    if (changed?.kind === 'binding') {
-      return;
-    }
-    if (changed?.kind !== 'dm') return;
+    if (changed?.kind !== 'binding') return;
     if (changed.accountId !== getActiveAccountId()) return;
     const peer = getCurrentPeer();
     const uin = peer && peer.chatType !== 2 ? getUinByUid(peer.peerUid) || (isNumericUin(peer.peerUid) ? peer.peerUid : '') : '';
@@ -666,76 +675,95 @@ async function tickDm(): Promise<void> {
   // 群详情面板（有「我的本群昵称」）不注入私聊开关
   const peer = getCurrentPeer();
   void prepareCurrentOpenChat(peer);
-  const isGroup = peer?.chatType === 2;
-  if (!accountId || !side || isGroup) {
+  if (!accountId || !side || !peer || !isDirectChat(peer.chatType)) {
     document.getElementById(DM_ID)?.remove();
     return;
   }
 
   // 直接插进 QQ 自己的 q-list 里（第一个 panel-content 是空的，插那儿会裸着）
-  const list = side.querySelector<HTMLElement>('.panel-content .q-list.list-group');
-  if (!list) return;
+  const list = side.querySelector<HTMLElement>('.panel-content.temp > .q-list.list-group:not(.set-block)') ??
+    side.querySelector<HTMLElement>('.panel-content .q-list.list-group');
+  if (!list) {
+    document.getElementById(DM_ID)?.remove();
+    return;
+  }
 
   const aio = getCurAio();
   const header = (aio?.['header'] ?? {}) as Record<string, unknown>;
-  const uid = String(peer?.peerUid ?? header['uid'] ?? '');
-  let uin = isNumericUin(String(header['uin'] ?? '')) ? String(header['uin']) : '';
+  const uid = peer.peerUid;
+  const headerUin = String(header['uin'] ?? '');
+  let uin = isNumericUin(uid) ? uid : getUinByUid(uid) || (header['uid'] === uid && isNumericUin(headerUin) ? headerUin : '');
   if (!uin && uid) {
-    try { uin = getUinByUid(uid) || await resolvePeerUin(uid); } catch (err) { log(`解析私聊对象 QQ 号失败：${String(err)}`); }
+    try { uin = await resolvePeerUin(uid); } catch (err) { log(`解析私聊对象 QQ 号失败：${String(err)}`); }
   }
   if (!isCurrentAccount(accountId, accountEpoch) || version !== dmRenderVersion || !list.isConnected) return;
-  let dm: { uin: string; enabled: boolean } | null = null;
-  let binding: { uin: string; keyID: string } | null = null;
-  if (isNumericUin(uin)) {
-    [dm, binding] = await Promise.all([
-      getDmConfig(uin).catch(err => { log(`读取私聊开关失败：${String(err)}`); return null; }),
-      getKeyBinding(uin).catch(err => { log(`读取私聊绑定失败：${String(err)}`); return null; })
-    ]);
+  if (!isNumericUin(uin)) {
+    document.getElementById(DM_ID)?.remove();
+    return;
   }
-  if (!isCurrentAccount(accountId, accountEpoch) || version !== dmRenderVersion || !list.isConnected) return;
-  const bound = !!binding?.keyID;
-  let item = document.getElementById(DM_ID) as HTMLElement | null;
-  if (!item || !list.contains(item)) {
-    item = buildDmItem(list.querySelector<HTMLElement>(':scope > .q-list-item'));
-    list.insertBefore(item, list.firstElementChild);
+  const isCurrent = (): boolean => isCurrentAccount(accountId, accountEpoch) &&
+    list.isConnected && getCurrentPeer()?.peerUid === peer.peerUid && getCurrentPeer()?.chatType === peer.chatType;
+  let item = document.getElementById(DM_ID);
+  if (!item || !list.contains(item) || item.dataset.uin !== uin) {
+    item?.remove();
+    const nativeRow = list.querySelector<HTMLElement>(':scope > .q-list-item') ??
+      side.querySelector<HTMLElement>('.q-list-item:has(.q-switch)');
+    item = buildDmItem(uin, isCurrent, nativeRow);
+    list.prepend(item);
   }
-  const sw = item.querySelector<HTMLElement>('.q-switch');
-  if (!sw) return;
-  const on = bound && !!dm?.enabled;
-  sw.setAttribute('aria-checked', on ? 'true' : 'false');
-  sw.classList.toggle('is-active', on);
-  sw.setAttribute('aria-disabled', bound ? 'false' : 'true');
-  sw.style.opacity = bound ? '' : '.5';
-  item.title = bound ? '加密' : '未绑定公钥（去设置里绑定后才能开启）';
-
-  sw.onclick = async () => {
-    if (!bound || !isCurrentAccount(accountId, accountEpoch)) return;
-    const now = sw.getAttribute('aria-checked') === 'true';
-    sw.setAttribute('aria-checked', now ? 'false' : 'true');
-    sw.classList.toggle('is-active', !now);
-    try {
-      await setDmConfig(uin, !now);
-      if (!isCurrentAccount(accountId, accountEpoch)) return;
-      log(`私聊加密开关：${uin || uid} → ${!now ? '开' : '关'}`);
-    } catch (err) {
-      sw.setAttribute('aria-checked', now ? 'true' : 'false');
-      sw.classList.toggle('is-active', now);
-      log(`私聊开关保存失败：${String(err)}`);
-    }
-  };
+  const toggle = item.querySelector<HTMLElement>('.q-switch')!;
+  try {
+    const { binding, enabled } = await window.QwQNTPgp.getDirectBinding(uin);
+    if (!isCurrent() || !item.isConnected || version !== dmRenderVersion) return;
+    toggle.classList.toggle('is-active', enabled);
+    toggle.setAttribute('aria-checked', String(enabled));
+    toggle.setAttribute('aria-disabled', String(!binding));
+    toggle.tabIndex = 0;
+  } catch (err) {
+    log(`读取私聊加密状态失败：${String(err)}`);
+  }
 }
 
-/** 完全照 QQ 自己的 q-list-item + q-switch 结构做，视觉原生 */
-function buildDmItem(nativeItem: HTMLElement | null): HTMLElement {
-  const item = nativeItem ? nativeItem.cloneNode(false) as HTMLElement : document.createElement('div');
+function buildDmItem(uin: string, isCurrent: () => boolean, nativeRow: HTMLElement | null): HTMLElement {
+  const item = document.createElement('div');
   item.id = DM_ID;
   item.className = 'q-list-item vue-component';
-  item.removeAttribute('style');
+  item.dataset.uin = uin;
   item.innerHTML = `
     <div class="q-list-item_title"><h5>加密</h5></div>
     <div class="q-list-item_tail">
-      <div class="q-switch vue-component" role="switch" aria-label="加密" aria-checked="false" aria-disabled="false" tabindex="0"><span class="q-switch__handle"></span></div>
+      <div class="q-switch vue-component" role="switch" bf-label-inner="true" aria-label="加密" aria-checked="false" aria-disabled="true" tabindex="-1"><span class="q-switch__handle"></span></div>
     </div>
   `;
+  const toggle = item.querySelector<HTMLElement>('.q-switch')!;
+  // QQ scopes the list-item spacing and switch styles to its Vue components.
+  if (nativeRow) {
+    for (const selector of ['', '.q-list-item_title', '.q-list-item_title h5', '.q-list-item_tail', '.q-switch', '.q-switch__handle']) {
+      const source = selector ? nativeRow.querySelector(selector) : nativeRow;
+      const target = selector ? item.querySelector(selector) : item;
+      for (const attr of source?.attributes ?? []) {
+        if (attr.name.startsWith('data-v-')) target?.setAttribute(attr.name, attr.value);
+      }
+    }
+  }
+  let saving = false;
+  const activate = async (): Promise<void> => {
+    if (saving || toggle.getAttribute('aria-disabled') === 'true' || !isCurrent() || !item.isConnected) return;
+    saving = true;
+    try {
+      await window.QwQNTPgp.setDirectEncryption(uin, toggle.getAttribute('aria-checked') !== 'true');
+    } catch (error) {
+      if (isCurrent() && item.isConnected) toast(`保存加密状态失败：${errorText(error)}`);
+    } finally {
+      if (isCurrent() && item.isConnected) await tickDm();
+      saving = false;
+    }
+  };
+  toggle.addEventListener('click', () => void activate());
+  toggle.addEventListener('keydown', event => {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault();
+    if (!event.repeat) void activate();
+  });
   return item;
 }

@@ -4,7 +4,8 @@
  * 启动配置、聊天监听和设置页。内核与 GnuPG 能力通过 preload 调用。
  */
 import { initRendererLog, log } from './log';
-import { loadConfig } from './config-cache';
+import { loadConfig, loadAccountContext } from './config-cache';
+import { friendsCache, readFriends, readKeys } from './contact-lists';
 import { setupVueTracker } from './store';
 import { startMessageWatcher, setAutoDecrypt } from './message';
 import { startInputWatcher } from './input';
@@ -34,6 +35,18 @@ async function bootstrap(): Promise<void> {
 
   // Vue 组件追踪（peer / selfInfo 的来源之一）
   setupVueTracker();
+  const warmLists = (): void => {
+    if (!location.hash.startsWith('#/main/message')) return;
+    void loadAccountContext().then(context => {
+      if (context) void Promise.allSettled([readFriends(context.accountId), readKeys(context.accountId), window.QwQNTPgp.bindingList()]);
+    }).catch(err => log(`预加载联系人失败：${String(err)}`));
+  };
+  warmLists();
+  window.addEventListener('hashchange', warmLists);
+  window.addEventListener('qwqnt-pgp:account-changed', () => {
+    friendsCache.clear();
+    warmLists();
+  });
   startDecryptMenu();
   // Start group preloading immediately, independently of opening the detail panel.
   startGroupPanel();

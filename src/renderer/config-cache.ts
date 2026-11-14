@@ -15,25 +15,20 @@ const DATA_TTL_MS = 5000;
 const DATA_CACHE_MAX = 256;
 interface Entry<T> { value: T; expiresAt: number }
 interface Pending<T> { promise: Promise<T>; ids: Set<string>; invalidated: boolean }
-const dmCache = new Map<string, Entry<{ uin: string; enabled: boolean }>>();
 const groupCache = new Map<string, Entry<{ groupId: string; targets: string[] }>>();
 const bindingCache = new Map<string, Entry<KeyBinding | null>>();
-const inflightDm = new Map<string, Pending<{ uin: string; enabled: boolean }>>();
 const inflightGroup = new Map<string, Pending<{ groupId: string; targets: string[] }>>();
 const inflightBindings = new Map<string, Pending<KeyBinding[]>>();
 
 interface ConfigDataApi {
-  prepareDmConfig?: (uin: string) => Promise<{ uin: string; enabled: boolean }>;
   prepareGroupConfig?: (groupId: string) => Promise<{ groupId: string; targets: string[] }>;
-  getDmConfig?: (uin: string) => Promise<{ uin: string; enabled: boolean }>;
-  setDmConfig?: (uin: string, enabled: boolean) => Promise<{ uin: string; enabled: boolean } | void>;
   getGroupConfig?: (groupId: string) => Promise<{ groupId: string; targets: string[] }>;
   setGroupTarget?: (groupId: string, uin: string, enabled: boolean) => Promise<{ groupId: string; targets: string[] } | void>;
   getKeyBindings?: (uins: string[]) => Promise<KeyBinding[]>;
   setKeyBinding?: (uin: string, keyID: string | null) => Promise<KeyBinding | void>;
   onDataChanged?: (cb: (event: DataChangedEvent) => void) => void;
 }
-export interface DataChangedEvent { accountId: string; kind: 'dm' | 'group' | 'binding'; id: string }
+export interface DataChangedEvent { accountId: string; kind: 'group' | 'binding'; id: string }
 
 function dataApi(): ConfigDataApi { return window.QwQNTPgp as typeof window.QwQNTPgp & ConfigDataApi; }
 function isNumericId(value: string): boolean { return /^[1-9]\d*$/.test(value); }
@@ -65,8 +60,8 @@ function activateAccount(context: AccountContext | null, notify = true): void {
   activeContext = context;
   accountGeneration++;
   cache = null; loading = null; contextLoading = null;
-  dmCache.clear(); groupCache.clear(); bindingCache.clear();
-  inflightDm.clear(); inflightGroup.clear(); inflightBindings.clear();
+  groupCache.clear(); bindingCache.clear();
+  inflightGroup.clear(); inflightBindings.clear();
   try { delete window.__qwqnt_pgp_cfg; } catch { /* ignore */ }
   if (notify) window.dispatchEvent(new CustomEvent('qwqnt-pgp:account-changed', { detail: context }));
 }
@@ -105,11 +100,7 @@ try {
   dataApi().onDataChanged?.(event => {
     if (!activeContext || event?.accountId !== activeContext.accountId) return;
     if (!event || !isNumericId(event.id)) return;
-    if (event.kind === 'dm') {
-      dmCache.delete(event.id);
-      const pending = inflightDm.get(event.id);
-      if (pending) { pending.invalidated = true; inflightDm.delete(event.id); }
-    } else if (event.kind === 'group') {
+    if (event.kind === 'group') {
       groupCache.delete(event.id);
       const pending = inflightGroup.get(event.id);
       if (pending) { pending.invalidated = true; inflightGroup.delete(event.id); }
@@ -159,59 +150,6 @@ export async function saveConfig(patch: Partial<PgpConfig>): Promise<PgpConfig> 
   return next;
 }
 
-export async function getDmConfig(uin: string): Promise<{ uin: string; enabled: boolean }> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  if (!isNumericId(uin)) throw new Error('私聊配置需要数字 QQ 号');
-  const hit = cached(dmCache, uin); if (hit) return hit;
-  const pending = inflightDm.get(uin); if (pending) return pending.promise;
-  const entry: Pending<{ uin: string; enabled: boolean }> = { ids: new Set([uin]), invalidated: false, promise: Promise.resolve({ uin, enabled: false }) };
-  const generation = accountGeneration;
-  const request = Promise.resolve().then(() => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，取消旧私聊读取');
-    const api = dataApi(); if (!api.getDmConfig) throw new Error('DM config API unavailable');
-    return api.getDmConfig(uin);
-  }).then(result => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧私聊配置');
-    if (result?.uin !== uin || typeof result.enabled !== 'boolean') throw new Error('DM config response identity mismatch');
-    if (inflightDm.get(uin) === entry) store(dmCache, uin, result);
-    return result;
-  }).finally(() => { if (inflightDm.get(uin) === entry) inflightDm.delete(uin); });
-  entry.promise = request;
-  inflightDm.set(uin, entry);
-  const result = await request;
-  return entry.invalidated ? getDmConfig(uin) : result;
-}
-/** Validate and lazily clean one opened DM; send paths keep using the raw getter. */
-export async function prepareDmConfig(uin: string): Promise<{ uin: string; enabled: boolean }> {
-  const context = await loadAccountContext();
-  if (!context || !isNumericId(uin)) throw new Error('私聊配置需要有效账号与数字 QQ 号');
-  const generation = accountGeneration;
-  const api = dataApi();
-  if (!api.prepareDmConfig) throw new Error('DM preparation API unavailable');
-  const result = await api.prepareDmConfig(uin);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧私聊准备结果');
-  if (result?.uin !== uin || typeof result.enabled !== 'boolean') throw new Error('DM prepare response identity mismatch');
-  const pending = inflightDm.get(uin);
-  if (pending) { pending.invalidated = true; inflightDm.delete(uin); }
-  store(dmCache, uin, result);
-  return result;
-}
-export function getCachedDmConfig(uin: string): { uin: string; enabled: boolean } | undefined {
-  return isNumericId(uin) ? cached(dmCache, uin) : undefined;
-}
-export async function setDmConfig(uin: string, enabled: boolean): Promise<{ uin: string; enabled: boolean }> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  if (!isNumericId(uin)) throw new Error('私聊配置需要数字 QQ 号');
-  const api = dataApi(); if (!api.setDmConfig) throw new Error('DM config API unavailable');
-  const generation = accountGeneration;
-  if (generation !== accountGeneration) throw new Error('账号已切换，取消旧私聊写入');
-  const response = await api.setDmConfig(uin, enabled);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧私聊配置');
-  const result = response && response.uin === uin && typeof response.enabled === 'boolean' ? response : { uin, enabled };
-  const pending = inflightDm.get(uin);
-  if (pending) { pending.invalidated = true; inflightDm.delete(uin); }
-  store(dmCache, uin, result); emitDataChanged({ accountId: activeContext!.accountId, kind: 'dm', id: uin }); return result;
-}
 export async function getGroupConfig(groupId: string): Promise<{ groupId: string; targets: string[] }> {
   await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
   if (!isNumericId(groupId)) throw new Error('群配置需要数字群号');

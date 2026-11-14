@@ -12,6 +12,7 @@ import { log } from './log';
 import { initNativeHook, prepareNativeOffsets } from './native-hook';
 import { buildRecvPacket, parseRecvResponse } from './forward';
 import { accountIdFromLoginList } from './account-context';
+import { isDirectChat } from '../shared/chat-type';
 
 type AnyObj = Record<string, any>;
 
@@ -181,7 +182,7 @@ function cacheMessageRecord(key: string, value: NativeMessageRecord | null, ttl:
 /** Read exactly one native message record for a validated peer and positive message ID. */
 export async function getMessageRecord(accountId: string, peer: ArkPeer, msgId: string): Promise<NativeMessageRecord | null> {
   if (!/^[1-9]\d{0,19}$/.test(accountId)) return null;
-  if (!peer || (peer.chatType !== 1 && peer.chatType !== 2) ||
+  if (!peer || (!isDirectChat(peer.chatType) && peer.chatType !== 2) ||
       typeof peer.peerUid !== 'string' || !peer.peerUid.trim() ||
       typeof msgId !== 'string' || !/^[1-9]\d*$/.test(msgId)) return null;
 
@@ -286,6 +287,42 @@ export async function resolveUin(uid: string): Promise<string> {
     log(`[kernel] resolveUin GroupService 失败 uid=${key}：${String(err)}`);
   }
   return '';
+}
+
+export async function listFriends(): Promise<Array<{ uin: string; name: string }>> {
+  const session = getSession();
+  const buddy = session?.getBuddyService?.();
+  const profile = session?.getProfileService?.();
+  if (!buddy?.getBuddyListV2 || !profile?.getCoreAndBaseInfo) throw new Error('当前 QQ 好友服务不可用');
+  const result = await withKernelTimeout('读取好友列表', Promise.resolve().then(() => buddy.getBuddyListV2('0', true, 0)));
+  if (!Array.isArray(result?.data)) throw new Error('QQ 未返回好友列表');
+  const uids = [...new Set<string>(result.data.flatMap((group: { buddyUids?: string[] }) => group.buddyUids ?? []))];
+  const friends = new Map<string, { uin: string; name: string }>();
+  for (let offset = 0; offset < uids.length; offset += 256) {
+    const batch = uids.slice(offset, offset + 256);
+    const profiles = await withKernelTimeout('读取好友资料', Promise.resolve().then(() => profile.getCoreAndBaseInfo('nodeStore', batch)));
+    for (const uid of batch) {
+      const info = profiles instanceof Map ? profiles.get(uid) : profiles?.[uid];
+      const value = info?.uin || info?.coreInfo?.uin;
+      if (!isNumericUin(value)) continue;
+      const uin = String(value);
+      friends.set(uin, { uin, name: String(info.coreInfo?.remark || info.coreInfo?.nick || info.remark || info.nick || uin) });
+    }
+  }
+  return [...friends.values()];
+}
+
+export async function lookupContact(uin: string): Promise<{ uin: string; name: string }> {
+  if (typeof uin !== 'string' || !/^[1-9]\d{0,19}$/.test(uin)) throw new Error('请输入有效的数字 QQ 号');
+  const session = getSession();
+  const convert = session?.getUixConvertService?.();
+  const profile = session?.getProfileService?.();
+  const converted = await withKernelTimeout('读取联系人 UID', Promise.resolve().then(() => convert?.getUid?.([uin])));
+  const uid = converted?.uidInfo instanceof Map ? converted.uidInfo.get(uin) : converted?.uidInfo?.[uin];
+  if (typeof uid !== 'string' || !uid) return { uin, name: uin };
+  const result = await withKernelTimeout('读取联系人资料', Promise.resolve().then(() => profile?.getCoreAndBaseInfo?.('nodeStore', [uid])));
+  const info = result instanceof Map ? result.get(uid) : result?.[uid];
+  return { uin, name: String(info?.coreInfo?.remark || info?.coreInfo?.nick || info?.remark || info?.nick || uin) };
 }
 
 /** 发一条 ark 卡片（合并转发卡片就是 elementType 10） */

@@ -1,11 +1,12 @@
 import { buildCiphertextCard } from '../shared/forward-card';
+import { isDirectChat } from '../shared/chat-type';
+import { encodeFaceParts, facePart, type FacePart } from '../shared/qq-face';
 import { randomUUID } from 'node:crypto';
 import type { KeyBinding, PgpConfig } from '@/shared/types';
 
 type AnyObj = Record<string, any>;
 type InterceptResult = { action: 'pass' | 'block' };
 type Peer = { chatType: number; peerUid: string };
-type DmConfig = { uin: string; enabled: boolean };
 type GroupConfig = { groupId: string; targets: string[] };
 type ForwardNode = { uin: string; name: string; groupId?: number; time: number; text: string };
 
@@ -29,8 +30,8 @@ export interface SendInterceptorDeps {
   assertNativeAccount(context: { accountId: string; selfUid: string; revision: number; windowId: number }): void;
   runInAccount?<T>(context: { accountId: string; selfUid: string; revision: number; windowId: number }, operation: () => Promise<T>): Promise<T>;
   getConfig(accountId: string): PgpConfig;
-  getDmConfig(accountId: string, uin: string): Promise<DmConfig>;
   getGroupConfig(accountId: string, groupId: string): Promise<GroupConfig>;
+  getDirectBinding(accountId: string, uin: string): Promise<{ binding: KeyBinding | null; enabled: boolean }>;
   getKeyBindings(accountId: string, uins: string[]): Promise<KeyBinding[]>;
   resolveUin(uid: string): Promise<string>;
   getSelfInfo(accountId: string, selfUid: string): Promise<{ uin: string; uid: string; nick: string } | null>;
@@ -94,7 +95,7 @@ export function installAutoSendInterceptor(
       const earlyPayload = earlyRequest?.payload?.[0] as AnyObj | undefined;
       const earlyElements = earlyPayload?.msgElements;
       const isPlaintextSend = earlyRequest?.cmdName === SEND_CMD && Array.isArray(earlyElements) && earlyElements.length > 0 &&
-        earlyElements.every(element => isObject(element) && Number(element.elementType) === 1);
+        earlyElements.every(isTextOrFace);
       context = deps.captureAccount(raw[0], rawChannel);
       if (!context) {
         if (isPlaintextSend) {
@@ -124,7 +125,7 @@ export function installAutoSendInterceptor(
         fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: '无法识别 QQ 文本消息元素，已阻止自动发送' }, deps);
         return { action: 'block' };
       }
-      if (!elements.length || elements.some(element => !isObject(element) || Number(element.elementType) !== 1)) return;
+      if (!elements.length || !elements.every(isTextOrFace)) return;
       const text = extractPlaintext(elements);
       if (text === null) {
         fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: 'QQ 文本元素格式无效，已阻止自动发送' }, deps);
@@ -209,17 +210,16 @@ export function installAutoSendInterceptor(
       if (!peer) throw new Error('QQ sendMsg 请求缺少有效会话信息');
       let otherBindings: KeyBinding[] = [];
       let groupId = 0;
-      if (peer.chatType === 1) {
+      if (isDirectChat(peer.chatType)) {
         const peerUin = numericUin(peer.peerUid) ? peer.peerUid : await deps.resolveUin(peer.peerUid);
         if (!numericUin(peerUin)) throw new Error('无法解析私聊对象数字 QQ 号，已阻止明文发送');
-        const dm = await deps.getDmConfig(accountId, peerUin);
-        if (!dm.enabled) {
+        const { binding, enabled } = await deps.getDirectBinding(accountId, peerUin);
+        if (!enabled || !binding) {
           ensureCurrent();
           replayEnvelope(args, cloneEnvelope(originalEnvelope), permitted, deps);
           return;
         }
-        otherBindings = await deps.getKeyBindings(accountId, [peerUin]);
-        if (!otherBindings.some(binding => binding.uin === peerUin)) throw new Error(`私聊对象 ${peerUin} 没有已绑定的公钥`);
+        otherBindings = [binding];
       } else if (peer.chatType === 2) {
         if (!numericUin(peer.peerUid)) throw new Error('群号不是有效数字，已阻止明文发送');
         groupId = Number(peer.peerUid);
@@ -332,14 +332,26 @@ function cloneEnvelope(envelope: unknown[]): unknown[] {
   return [envelope[0], { ...request, payload }];
 }
 
+function isTextOrFace(element: unknown): boolean {
+  if (!isObject(element)) return false;
+  const type = Number(element.elementType);
+  return type === 1 || (type === 6 && isObject(element.faceElement) && [1, 2].includes(Number(element.faceElement.faceType)));
+}
+
 function extractPlaintext(rawElements: unknown): string | null {
   if (!Array.isArray(rawElements) || !rawElements.length) return null;
-  const chunks: string[] = [];
+  const chunks: FacePart[] = [];
   for (const raw of rawElements) {
+    if (isObject(raw) && Number(raw.elementType) === 6 && isObject(raw.faceElement)) {
+      const part = facePart(raw.faceElement.faceIndex, raw.faceElement.faceText);
+      if (!part) return null;
+      chunks.push(part);
+      continue;
+    }
     if (!isObject(raw) || Number(raw.elementType) !== 1 || !isObject(raw.textElement) || typeof raw.textElement.content !== 'string') return null;
     chunks.push(raw.textElement.content);
   }
-  const text = chunks.join('');
+  const text = encodeFaceParts(chunks);
   return text.trim() ? text : null;
 }
 
@@ -352,7 +364,7 @@ function normalizePeer(raw: unknown): Peer | null {
   if (!isObject(raw)) return null;
   const chatType = Number(raw.chatType);
   const peerUid = typeof raw.peerUid === 'string' ? raw.peerUid : '';
-  return (chatType === 1 || chatType === 2) && peerUid ? { chatType, peerUid } : null;
+  return (isDirectChat(chatType) || chatType === 2) && peerUid ? { chatType, peerUid } : null;
 }
 
 function numericUin(value: unknown): value is string {

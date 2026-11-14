@@ -31,19 +31,23 @@ const api = {
   getConfig: () => invoke<PgpConfig>('get-config'),
   setConfig: (patch: Partial<PgpConfig>) => invoke<PgpConfig>('set-config', patch),
   getConfigPath: () => invoke<string>('get-config-path'),
-  getDmConfig: (uin: string) => invoke<{ uin: string; enabled: boolean }>('get-dm-config', uin),
-  prepareDmConfig: (uin: string) => invoke<{ uin: string; enabled: boolean }>('prepare-dm-config', uin),
-  setDmConfig: (uin: string, enabled: boolean) => invoke<{ uin: string; enabled: boolean }>('set-dm-config', uin, enabled),
   getGroupConfig: (groupId: string) => invoke<{ groupId: string; targets: string[] }>('get-group-config', groupId),
   prepareGroupConfig: (groupId: string) => invoke<{ groupId: string; targets: string[] }>('prepare-group-config', groupId),
   setGroupTarget: (groupId: string, uin: string, enabled: boolean) => invoke<{ groupId: string; targets: string[] }>('set-group-target', groupId, uin, enabled),
   getKeyBindings: (uins: string[]) => invoke<KeyBinding[]>('get-key-bindings', uins),
+  bindingList: () => invoke<KeyBinding[]>('binding-list'),
+  getDirectBinding: (uin: string) => invoke<{ binding: KeyBinding | null; enabled: boolean }>('get-direct-binding', uin),
+  setDirectEncryption: (uin: string, enabled: boolean) => invoke<void>('set-direct-encryption', uin, enabled),
   listKeyBindings: (cursor?: string, limit?: number, query?: string) => invoke<{ items: KeyBinding[]; nextCursor: string | null }>('list-key-bindings', cursor, limit, query),
   setKeyBinding: (uin: string, keyID: string | null) => invoke<void>('set-key-binding', uin, keyID),
+  bindNewKey: (uin: string, keyID: string) => invoke<void>('bind-new-key', uin, keyID),
+  listFriends: (force = false) => invoke<Array<{ uin: string; name: string }>>('list-friends', force),
+  cachedFriends: () => invoke<Array<{ uin: string; name: string }> | undefined>('cached-friends'),
+  lookupContact: (uin: string) => invoke<{ uin: string; name: string }>('lookup-contact', uin),
   getAutoSendInterceptorStatus: () => rawInvoke<{ available: boolean; reason?: string }>('get-auto-send-interceptor-status'),
 
   detectGpg: () => invoke<GpgStatus>('detect-gpg'),
-  listKeys: () => invoke<{ secret: KeyInfo[]; public: KeyInfo[] }>('list-keys'),
+  listKeys: (force = false) => invoke<{ secret: KeyInfo[]; public: KeyInfo[] }>('list-keys', force),
   importKey: (armored: string) => invoke<{ keyIDs: string[] }>('import-key', armored),
   recvKey: (keyID: string, server?: string) => invoke<string>('recv-key', keyID, server),
   searchKeyserver: (query: string, server?: string) => invoke<KeySearchResult[]>('search-keyserver', query, server),
@@ -64,8 +68,8 @@ const api = {
     ipcRenderer.on('qwqnt-pgp:config-changed', handler);
     return () => ipcRenderer.off('qwqnt-pgp:config-changed', handler);
   },
-  onDataChanged: (cb: (change: { accountId: string; kind: 'dm' | 'group' | 'binding'; id: string }) => void) => {
-    const handler = (_e: unknown, change: { accountId: string; kind: 'dm' | 'group' | 'binding'; id: string }): void => { if (accountScope.currentContext()?.accountId === change.accountId) cb(change); };
+  onDataChanged: (cb: (change: { accountId: string; kind: 'group' | 'binding'; id: string }) => void) => {
+    const handler = (_e: unknown, change: { accountId: string; kind: 'group' | 'binding'; id: string }): void => { if (accountScope.currentContext()?.accountId === change.accountId) cb(change); };
     ipcRenderer.on('qwqnt-pgp:data-changed', handler);
     return () => ipcRenderer.off('qwqnt-pgp:data-changed', handler);
   },

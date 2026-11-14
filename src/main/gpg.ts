@@ -248,7 +248,9 @@ export class Gpg {
 
   private async decryptNow(armored: string, preferredKeyID = ''): Promise<DecryptResult> {
     // Hardware keys may need time to be inserted, unlocked and physically touched.
-    const args = ['--status-fd', '2'];
+    // Decryption must use only the local keyring. A missing signer key is reported
+    // as unverified; never make network or keyring changes as a side effect.
+    const args = ['--no-auto-key-retrieve', '--no-auto-key-import', '--status-fd', '2'];
     if (preferredKeyID.trim()) args.push('--try-secret-key', preferredKeyID.trim());
     args.push('--decrypt');
     const res = await this.run(args, armored, 10 * 60 * 1000);
@@ -357,13 +359,23 @@ export function parseColonKeys(output: string): KeyInfo[] {
 
 /** 从 `--status-fd 1` 的状态行里解析签名验证结果 */
 export function parseSignature(output: string): SignatureInfo {
+  const signatures = output.split(/^\[GNUPG:\] NEWSIG\b.*$/m).map(parseSignatureBlock);
+  const rank = (sig: SignatureInfo): number => {
+    if (sig.status === 'good') return sig.trust === 'full' ? 1 : 2;
+    return { none: 0, nokey: 3, error: 4, bad: 5 }[sig.status];
+  };
+  return signatures.reduce((worst, sig) => rank(sig) > rank(worst) ? sig : worst, { status: 'none' });
+}
+
+function parseSignatureBlock(output: string): SignatureInfo {
   const sig: SignatureInfo = { status: 'none' };
+  let hasGoodSignature = false;
   for (const line of output.split('\n')) {
     if (!line.startsWith('[GNUPG:] ')) continue;
     const parts = line.slice(9).trim().split(' ');
     const tag = parts[0];
     if (tag === 'GOODSIG') {
-      sig.status = 'good';
+      hasGoodSignature = true;
       sig.keyID = parts[1];
       sig.signer = parts.slice(2).join(' ');
     } else if (tag === 'BADSIG' || tag === 'EXPSIG' || tag === 'EXPKEYSIG' || tag === 'REVKEYSIG') {
@@ -387,6 +399,9 @@ export function parseSignature(output: string): SignatureInfo {
       sig.trust = 'never';
     }
   }
+  // GOODSIG alone is not proof of a valid signature; require GnuPG's
+  // cryptographic VALIDSIG status before exposing a successful result.
+  if (hasGoodSignature && sig.status === 'none') sig.status = sig.fingerprint ? 'good' : 'error';
   return sig;
 }
 

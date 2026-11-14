@@ -1,11 +1,12 @@
 import { buildCiphertextCard } from '../shared/forward-card';
+import { isDirectChat } from '../shared/chat-type';
 /**
  * 发送模块：加密 → 发「伪造聊天记录卡片」。
  * 通过 preload 暴露的 sendArk 接口发送卡片，不在 renderer 中调用未公开的内核桥接对象。
  */
 import { log } from './log';
 import { getUinByUid, resolvePeerUin } from './store';
-import { getAccountGeneration, getActiveAccountId, getDmConfig, getGroupConfig, getKeyBindings, loadAccountContext, loadConfig } from './config-cache';
+import { getAccountGeneration, getActiveAccountId, getGroupConfig, getKeyBindings, loadAccountContext, loadConfig } from './config-cache';
 import type { KeyBinding, PgpConfig, SendResult } from '@/shared/types';
 
 export interface PeerTarget {
@@ -115,6 +116,7 @@ async function resolveRecipients(peer: PeerTarget, cfg: PgpConfig, selfUin: stri
 /** 主入口：加密 + 发伪造聊天记录卡片 */
 export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
   const { peer, plaintext } = opts;
+  if (!isDirectChat(peer.chatType) && peer.chatType !== 2) return { ok: false, error: '当前会话不支持加密发送' };
   try {
     const context = await loadAccountContext();
     if (!context) throw new Error('当前 QQ 账号上下文不可用');
@@ -138,12 +140,11 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
       peerUin = getUinByUid(peer.peerUid) || await resolvePeerUin(peer.peerUid);
       assertSendAccount(account);
       if (!isNumericUin(peerUin)) return { ok: false, error: '无法解析私聊对象数字 QQ 号，已阻止发送' };
-      const dm = await getDmConfig(peerUin);
-      assertSendAccount(account);
-      if (!dm.enabled) return { ok: false, error: '此私聊的 PGP 加密开关未开启' };
     }
-    const bindingUins = peer.chatType === 2 ? groupTargets : [peerUin];
-    const bindings = await getKeyBindings(bindingUins);
+    const direct = isDirectChat(peer.chatType) ? await window.QwQNTPgp.getDirectBinding(peerUin) : null;
+    assertSendAccount(account);
+    if (direct && !direct.enabled) return { ok: false, error: '请先绑定对方公钥并在聊天详情开启加密' };
+    const bindings = direct?.binding ? [direct.binding] : await getKeyBindings(groupTargets);
     assertSendAccount(account);
     if (peer.chatType === 2) {
       if (!groupTargets.some(uin => uin !== selfUin && bindings.some(binding => binding.uin === uin && binding.keyID.trim()))) {

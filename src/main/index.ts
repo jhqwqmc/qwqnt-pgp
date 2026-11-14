@@ -6,7 +6,7 @@ import { app, ipcMain as electronIpcMain, webContents } from 'electron';
 import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { initConfig, getConfig, saveConfig, getConfigPath, readDebugConfig } from './config';
-import { getDmConfig, setDmConfig, getGroupConfig, prepareDmConfig, prepareGroupConfig, setGroupTarget, getKeyBindings, listKeyBindings, setKeyBinding, onDataChanged } from './entity-storage';
+import { getGroupConfig, prepareGroupConfig, setGroupTarget, getKeyBindings, listKeyBindings, setKeyBinding, getDirectBinding, setDirectEncryption, onDataChanged } from './entity-storage';
 import { initLog, log, logLine, isDebugLogEnabled } from './log';
 import { installAutoSendInterceptor, type AutoSendInterceptorHandle, type IpcInterceptorApi } from './send-interceptor';
 import { createSendInterceptorTransport, type WebContentsLike } from './send-interceptor-transport';
@@ -14,16 +14,22 @@ import { BoundedCryptoQueue } from './crypto-queue';
 import { Gpg, resumeDecryption } from './gpg';
 import { chooseOwnKey } from './identity';
 import { searchGithub } from './keys';
-import { sendArk, sendSso, getSelfLoginInfo, getGroupMembers, recvForwardMsg, resolveUin, getMessageRecord, prepareSsoOffsets } from './kernel';
+import { sendArk, sendSso, getSelfLoginInfo, getGroupMembers, listFriends, lookupContact, recvForwardMsg, resolveUin, getMessageRecord, prepareSsoOffsets } from './kernel';
 import { buildUploadPacket, parseUploadResponse, type ForwardNode } from './forward';
 import { FORWARD_TEXT_TOO_LARGE } from '../shared/forward-card';
 import { AccountContextRegistry, type AccountContext } from './account-context';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertAccountToken } from './scoped-ipc';
+import { ListCache } from '../shared/list-cache';
+
+const friendLists = new ListCache<Awaited<ReturnType<typeof listFriends>>>(60_000);
+const keyLists = new ListCache<Awaited<ReturnType<typeof syncOwnIdentity>>['keys']>(5_000);
 import { randomUUID } from 'node:crypto';
 import { extractAuthIdentity } from './account-auth';
 import { requestAuthData } from './account-auth-probe';
-import type { CryptoTestResult, PgpConfig } from '@/shared/types';
+import type { CryptoTestResult, KeyBinding, PgpConfig } from '@/shared/types';
+
+const bindingLists = new ListCache<KeyBinding[]>(5_000);
 
 const gpgInstances = new Map<string, Gpg>();
 const accountContexts = new AccountContextRegistry();
@@ -89,6 +95,7 @@ function installAccountObserver(interceptor: IpcInterceptorApi | null | undefine
       windowGenerations.set(contents.id, (windowGenerations.get(contents.id) ?? 0) + 1);
       authProbeAttempts.delete(contents.id);
       authProbeInflight.delete(contents.id);
+      try { friendLists.delete(captureAccount({ sender: contents }).accountId); } catch { /* no account to clear */ }
       accountContexts.invalidate(contents.id);
       broadcastAccountChanges();
     });
@@ -113,6 +120,7 @@ function installAccountObserver(interceptor: IpcInterceptorApi | null | undefine
       authProbeInflight.delete(id);
       const wc = webContents.fromId(id);
       if (!wc || wc.isDestroyed()) return;
+      try { friendLists.delete(captureAccount({ sender: wc }).accountId); } catch { /* first login */ }
       accountContexts.invalidate(id);
       broadcastAccountChanges();
       void (async () => {
@@ -178,6 +186,7 @@ async function resolveAccountContext(
     try {
       const current = accountContexts.capture(id, namespace);
       if (current.accountId === self.uin && current.selfUid === self.uid) return current;
+      friendLists.delete(current.accountId);
     } catch { /* direct identity has not been established yet */ }
     const context = accountContexts.bindSession(id, self.uid, self.uin, namespace);
     broadcastAccountChanges();
@@ -266,6 +275,7 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     }
   };
   onDataChanged(change => {
+    if (change.kind === 'binding') bindingLists.delete(change.accountId);
     for (const wc of webContents.getAllWebContents()) {
       try { if (!wc.isDestroyed() && captureAccount({ sender: wc }).accountId === change.accountId) wc.send('qwqnt-pgp:data-changed', change); } catch { /* unbound windows have no account data */ }
     }
@@ -295,9 +305,6 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     return next;
   });
   ipcMain.handle('qwqnt-pgp:get-config-path', event => getConfigPath(captureAccount(event).accountId));
-  ipcMain.handle('qwqnt-pgp:get-dm-config', (event, uin: string) => getDmConfig(captureAccount(event).accountId, uin));
-  ipcMain.handle('qwqnt-pgp:prepare-dm-config', (event, uin: string) => prepareDmConfig(captureAccount(event).accountId, uin));
-  ipcMain.handle('qwqnt-pgp:set-dm-config', (event, uin: string, enabled: boolean) => setDmConfig(captureAccount(event).accountId, uin, enabled));
   ipcMain.handle('qwqnt-pgp:get-group-config', (event, groupId: string) => getGroupConfig(captureAccount(event).accountId, groupId));
   ipcMain.handle('qwqnt-pgp:prepare-group-config', (event, groupId: string) => {
     const accountId = captureAccount(event).accountId;
@@ -305,8 +312,45 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   });
   ipcMain.handle('qwqnt-pgp:set-group-target', (event, groupId: string, uin: string, enabled: boolean) => setGroupTarget(captureAccount(event).accountId, groupId, uin, enabled));
   ipcMain.handle('qwqnt-pgp:get-key-bindings', (event, uins: string[]) => getKeyBindings(captureAccount(event).accountId, uins));
+  ipcMain.handle('qwqnt-pgp:get-direct-binding', (event, uin: string) => getDirectBinding(captureAccount(event).accountId, uin));
+  ipcMain.handle('qwqnt-pgp:set-direct-encryption', (event, uin: string, enabled: boolean) => setDirectEncryption(captureAccount(event).accountId, uin, enabled));
   ipcMain.handle('qwqnt-pgp:list-key-bindings', (event, cursor?: string, limit?: number, query?: string) => listKeyBindings(captureAccount(event).accountId, cursor, limit, query));
+  ipcMain.handle('qwqnt-pgp:binding-list', event => {
+    const { accountId } = captureAccount(event);
+    return bindingLists.get(accountId, async () => {
+      const items: KeyBinding[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await listKeyBindings(accountId, cursor, 512);
+        items.push(...page.items);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      return items;
+    });
+  });
   ipcMain.handle('qwqnt-pgp:set-key-binding', (event, uin: string, keyID: string | null) => setKeyBinding(captureAccount(event).accountId, uin, keyID));
+  ipcMain.handle('qwqnt-pgp:bind-new-key', (event, uin: string, keyID: string) => {
+    if (typeof keyID !== 'string' || !keyID.trim()) throw new Error('请选择公钥');
+    const context = captureAccount(event);
+    return setKeyBinding(context.accountId, uin, keyID, true);
+  });
+  ipcMain.handle('qwqnt-pgp:cached-friends', event => friendLists.peek(captureAccount(event).accountId));
+  ipcMain.handle('qwqnt-pgp:list-friends', async (event, force?: boolean) => {
+    const context = captureAccount(event);
+    assertNativeAccount(context);
+    const friends = await friendLists.get(context.accountId, listFriends, force === true);
+    if (captureAccount(event).revision !== context.revision) throw new Error('账号已切换');
+    assertNativeAccount(context);
+    return friends;
+  });
+  ipcMain.handle('qwqnt-pgp:lookup-contact', async (event, uin: string) => {
+    const context = captureAccount(event);
+    assertNativeAccount(context);
+    const contact = await lookupContact(uin);
+    if (captureAccount(event).revision !== context.revision) throw new Error('账号已切换');
+    assertNativeAccount(context);
+    return contact;
+  });
 
   ipcMain.handle('qwqnt-pgp:detect-gpg', async (event: unknown) => {
     const accountId = captureAccount(event as Parameters<typeof captureAccount>[0]).accountId;
@@ -316,7 +360,11 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     return gpg.detect();
   });
 
-  ipcMain.handle('qwqnt-pgp:list-keys', async event => (await syncOwnIdentity(captureAccount(event).accountId)).keys);
+  ipcMain.handle('qwqnt-pgp:list-keys', (event, force?: boolean) => {
+    const id = captureAccount(event).accountId;
+    const cfg = getConfig(id);
+    return keyLists.get(JSON.stringify([id, cfg.gpgPath, cfg.gpgHome]), async () => (await syncOwnIdentity(id)).keys, force === true);
+  });
 
   ipcMain.handle('qwqnt-pgp:import-key', async (event, armored: string) => gpgFor(captureAccount(event).accountId).importKey(armored));
   ipcMain.handle('qwqnt-pgp:recv-key', async (event, keyID: string, server?: string) => {
@@ -412,9 +460,9 @@ export function onLoad(plugin: PluginLike): void {
       assertNativeAccount: context => assertNativeAccount(context),
       runInAccount: (context, operation) => accountScope.run(context, operation),
       getConfig,
-      getDmConfig,
       getGroupConfig,
       getKeyBindings,
+      getDirectBinding,
       resolveUin,
       getSelfInfo: async (accountId, selfUid) => {
         const self = await getSelfLoginInfo(selfUid);

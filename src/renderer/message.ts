@@ -1,5 +1,7 @@
 /** Message-side silent PGP decryption for QQ's native chat bubbles. */
 import { log } from './log';
+import { isDirectChat } from '../shared/chat-type';
+import { renderQQFaces } from './qq-face';
 import { getCurrentPeer, getSelfInfo } from './store';
 import { getActiveAccountId, getCached } from './config-cache';
 import type { DecryptResult, SignatureInfo } from '@/shared/types';
@@ -346,7 +348,7 @@ function normalizeRecord(record: NativeMessageRecord): ResolvedMessageRecord {
   return {
     msgId: typeof record.msgId === 'string' ? record.msgId : undefined,
     elements: Array.isArray(record.elements) ? record.elements : [],
-    ...(peerUid && (chatType === 1 || chatType === 2) ? { peer: { chatType, peerUid } } : {})
+    ...(peerUid && (isDirectChat(chatType) || chatType === 2) ? { peer: { chatType, peerUid } } : {})
   };
 }
 
@@ -541,7 +543,7 @@ async function resolveRecordForOwner(owner: Element, snapshot: MessageSnapshot):
   // native multi-forward elements, and QQ's rendered chat-record placeholder are candidates.
   if (!needsNativeRecord(owner, snapshot)) return existing;
   const peer = existing?.peer ?? getCurrentPeer();
-  if (!peer || (peer.chatType !== 1 && peer.chatType !== 2) || !peer.peerUid) return existing;
+  if (!peer || (!isDirectChat(peer.chatType) && peer.chatType !== 2) || !peer.peerUid) return existing;
   const api = window.QwQNTPgp as typeof window.QwQNTPgp & { getMessageRecord?: (peer: { chatType: number; peerUid: string }, msgId: string) => Promise<NativeMessageRecord | null> };
   if (!api.getMessageRecord) return existing;
   const record = await api.getMessageRecord({ chatType: peer.chatType, peerUid: peer.peerUid }, snapshot.msgId);
@@ -725,24 +727,25 @@ function replaceForwardCardWithNativeText(owner: Element, plaintext: string): HT
 
 function createNativeTextElement(plaintext: string): HTMLElement {
   const element = document.createElement('span');
-  element.className = 'text-element';
-  const normal = document.createElement('span');
-  normal.className = 'text-normal';
-  normal.textContent = plaintext;
-  element.appendChild(normal);
+  element.style.display = 'contents';
+  renderQQFaces(element, plaintext, true);
   return element;
 }
 
 function aggregateSignature(results: DecryptResult[]): SignatureInfo {
   const rank = { good: 0, none: 1, nokey: 2, error: 3, bad: 4 };
-  return results.reduce((worst, result) => rank[result.signature.status] > rank[worst.status]
+  const score = (signature: SignatureInfo): number =>
+    rank[signature.status] + (signature.status === 'good' && signature.trust !== 'full' ? 0.5 : 0);
+  return results.reduce((worst, result) => score(result.signature) > score(worst)
     ? result.signature : worst, results[0].signature);
 }
 
 function insertDecryptedTail(owner: Element, plain: HTMLElement, signature: SignatureInfo): void {
   const status = signature.status;
+  const trusted = status === 'good' && signature.trust === 'full';
   const title = {
-    good: '签名验证通过', none: '无签名', bad: '签名验证失败',
+    good: trusted ? '签名验证通过，签名者受本机信任' : '签名有效，但本机未确认签名者信任',
+    none: '无签名', bad: '签名验证失败',
     error: '签名校验出错', nokey: '缺少签名者公钥，无法验签'
   }[status];
   const create = (): HTMLSpanElement => {
@@ -751,7 +754,7 @@ function insertDecryptedTail(owner: Element, plain: HTMLElement, signature: Sign
     tag.dataset.status = status;
     tag.textContent = '已解密';
     tag.title = title;
-    tag.style.cssText = `font-size:12px;line-height:1.2;white-space:nowrap;user-select:none;margin-left:6px;color:${status === 'good' ? '#238636' : status === 'none' ? '#b77900' : '#d1242f'}`;
+    tag.style.cssText = `font-size:12px;line-height:1.2;white-space:nowrap;user-select:none;margin-left:6px;color:${trusted ? '#238636' : status === 'none' || status === 'good' ? '#b77900' : '#d1242f'}`;
     return tag;
   };
   const slot = [...owner.querySelectorAll('.lt-slot')].find(element => canonicalOwner(element) === owner);

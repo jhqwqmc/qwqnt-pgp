@@ -9,6 +9,7 @@ import { getCurrentPeer } from './store';
 import { getActiveAccountId, getCached, loadAccountContext, loadConfig } from './config-cache';
 import { sendEncrypted } from './send';
 import { toast } from './toast';
+import { readEditorFaces, renderQQFaces } from './qq-face';
 import { FORWARD_TEXT_TOO_LARGE } from '../shared/forward-card';
 import type { SendPolicy } from '@/shared/types';
 
@@ -150,9 +151,11 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
       if (epoch !== inputAccountEpoch || !editor.isConnected || getCurrentPeer()?.peerUid !== info.peerUid || getEditorText(editor).trim()) return;
       try {
         const ck = (editor as HTMLElement & { ckeditorInstance?: { setData?: (value: string) => void } }).ckeditorInstance;
-        if (ck?.setData) ck.setData(plainTextToHtml(info.plaintext));
+        const restored = document.createElement('span');
+        renderQQFaces(restored, info.plaintext);
+        if (ck?.setData) ck.setData(restored.innerHTML.replace(/\r\n|\r|\n/g, '<br>'));
         else {
-          editor.replaceChildren(document.createTextNode(info.plaintext));
+          editor.replaceChildren(...restored.childNodes);
           editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
           editor.dispatchEvent(new Event('change', { bubbles: true }));
         }
@@ -163,13 +166,9 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
   }).catch(err => log(`自动发送失败草稿检查身份失败：${String(err)}`));
 }
 
-function plainTextToHtml(text: string): string {
-  return text.replace(/[&<>"']/g, char => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  })[char]!).replace(/\r\n|\r|\n/g, '<br>');
-}
-
 function getEditorText(editor: HTMLElement): string {
+  const withFaces = readEditorFaces(editor);
+  if (withFaces !== null) return withFaces;
   const text = (editor.innerText ?? editor.textContent ?? '').replace(/\u00a0/g, ' ');
   return text.replace(/\n+$/g, '');
 }

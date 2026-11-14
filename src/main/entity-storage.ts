@@ -4,8 +4,7 @@ import { opendir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { KeyBinding } from '@/shared/types';
 
-export type DataChange = { accountId: string; kind: 'dm' | 'group' | 'binding'; id: string };
-export interface DmConfig { uin: string; enabled: boolean }
+export type DataChange = { accountId: string; kind: 'group' | 'binding'; id: string };
 export interface GroupConfig { groupId: string; targets: string[] }
 export interface KeyBindingPage { items: KeyBinding[]; nextCursor: string | null }
 
@@ -13,7 +12,7 @@ const MAX_BATCH = 512;
 const listeners = new Set<(change: DataChange) => void>();
 let accountsDir = '';
 const groupQueues = new Map<string, Promise<unknown>>();
-const dmQueues = new Map<string, Promise<unknown>>();
+const bindingQueues = new Map<string, Promise<unknown>>();
 const MAX_PREPARE_GROUP_TARGETS = 4096;
 
 export function initEntityStorage(configDir: string): void {
@@ -35,7 +34,7 @@ function validId(value: unknown): value is string {
   return typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 }
 
-function entityPath(accountId: string, kind: 'dm' | 'groups' | 'bindings', id: string): string {
+function entityPath(accountId: string, kind: 'groups' | 'bindings', id: string): string {
   if (!accountsDir) throw new Error('联系人数据存储尚未初始化');
   const account = requireId(accountId);
   if (!validId(id)) throw new Error('QQ号或群号必须是正整数数字字符串');
@@ -62,41 +61,6 @@ async function atomicWrite(path: string, value: unknown): Promise<void> {
     await rm(temp, { force: true }).catch(() => undefined);
     throw new Error(`保存联系人配置失败：${String(err)}`);
   }
-}
-
-export async function getDmConfig(accountId: string, uin: string): Promise<DmConfig> {
-  const id = requireId(uin);
-  const stored = await readJson<Partial<DmConfig>>(entityPath(accountId, 'dm', id));
-  return { uin: id, enabled: stored?.uin === id && stored.enabled === true };
-}
-
-export async function setDmConfig(accountId: string, uin: string, enabled: boolean): Promise<DmConfig> {
-  const id = requireId(uin);
-  const account = requireId(accountId);
-  if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
-  return serialize(dmQueues, `${account}\u0000${id}`, async () => {
-    if (enabled && !(await getKeyBindings(account, [id])).length) throw new Error('请先绑定对方的公钥');
-    const value = { uin: id, enabled };
-    await atomicWrite(entityPath(account, 'dm', id), value);
-    emit({ accountId: account, kind: 'dm', id });
-    return value;
-  });
-}
-
-/** Validate only this peer when its chat opens; sending continues to use the side-effect-free getter. */
-export async function prepareDmConfig(accountId: string, uin: string): Promise<DmConfig> {
-  const id = requireId(uin);
-  const account = requireId(accountId);
-  return serialize(dmQueues, `${account}\u0000${id}`, async () => {
-    const path = entityPath(account, 'dm', id);
-    const stored = await readJson<Partial<DmConfig>>(path, {});
-    const enabled = stored?.uin === id && stored?.enabled === true && (await getKeyBindings(account, [id])).length > 0;
-    const value = { uin: id, enabled };
-    if (stored === null || (stored.uin === id && stored.enabled === enabled)) return value;
-    await atomicWrite(path, value);
-    emit({ accountId: account, kind: 'dm', id });
-    return value;
-  });
 }
 
 export async function getGroupConfig(accountId: string, groupId: string): Promise<GroupConfig> {
@@ -199,15 +163,37 @@ export async function listKeyBindings(accountId: string, cursor?: string, limit 
   return { items: validItems, nextCursor: hasMore && pageIds.length ? pageIds.at(-1)! : null };
 }
 
-export async function setKeyBinding(accountId: string, uin: string, keyID: string | null): Promise<void> {
+type StoredBinding = Partial<KeyBinding> & { directEnabled?: boolean };
+
+export async function getDirectBinding(accountId: string, uin: string): Promise<{ binding: KeyBinding | null; enabled: boolean }> {
+  const value = await readJson<StoredBinding>(entityPath(accountId, 'bindings', uin));
+  const binding = typeof value?.keyID === 'string' && value.keyID.trim() ? { uin, keyID: value.keyID } : null;
+  return { binding, enabled: !!binding && value?.directEnabled !== false };
+}
+
+export async function setDirectEncryption(accountId: string, uin: string, enabled: boolean): Promise<void> {
+  if (typeof enabled !== 'boolean') throw new Error('加密开关必须是布尔值');
+  const path = entityPath(accountId, 'bindings', uin);
+  await serialize(bindingQueues, path, async () => {
+    const { binding } = await getDirectBinding(accountId, uin);
+    if (!binding) throw new Error('请先在好友管理中绑定公钥');
+    await atomicWrite(path, { ...binding, directEnabled: enabled });
+    emit({ accountId, kind: 'binding', id: uin });
+  });
+}
+
+export async function setKeyBinding(accountId: string, uin: string, keyID: string | null, onlyUnbound = false): Promise<void> {
   const id = requireId(uin);
   const path = entityPath(accountId, 'bindings', id);
-  if (keyID === null || keyID === '') await rm(path, { force: true });
-  else {
-    if (typeof keyID !== 'string' || !keyID.trim()) throw new Error('keyID 必须是非空字符串或 null');
-    await atomicWrite(path, { uin: id, keyID: keyID.trim() });
-  }
-  emit({ accountId: requireId(accountId), kind: 'binding', id });
+  await serialize(bindingQueues, path, async () => {
+    if (onlyUnbound && (await getKeyBindings(accountId, [id])).length) throw new Error('此 QQ 号已绑定公钥');
+    if (keyID === null || keyID === '') await rm(path, { force: true });
+    else {
+      if (typeof keyID !== 'string' || !keyID.trim()) throw new Error('keyID 必须是非空字符串或 null');
+      await atomicWrite(path, { uin: id, keyID: keyID.trim() });
+    }
+    emit({ accountId, kind: 'binding', id });
+  });
 }
 
 function requireId(value: unknown): string {
