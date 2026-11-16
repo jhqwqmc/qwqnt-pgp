@@ -1,3 +1,4 @@
+import { defaultLocale, setLocale } from '../shared/i18n';
 /** Small renderer caches for general settings and the currently requested per-peer data. */
 import type { KeyBinding, PgpConfig } from '@/shared/types';
 
@@ -33,6 +34,7 @@ export interface DataChangedEvent { accountId: string; kind: 'group' | 'binding'
 function dataApi(): ConfigDataApi { return window.QwQNTPgp as typeof window.QwQNTPgp & ConfigDataApi; }
 function isNumericId(value: string): boolean { return /^[1-9]\d*$/.test(value); }
 function publish(c: PgpConfig): void {
+  setLocale(c.locale ?? defaultLocale);
   cache = c;
   try { window.__qwqnt_pgp_cfg = c; } catch { /* ignore */ }
 }
@@ -60,6 +62,7 @@ function activateAccount(context: AccountContext | null, notify = true): void {
   activeContext = context;
   accountGeneration++;
   cache = null; loading = null; contextLoading = null;
+  setLocale(defaultLocale);
   groupCache.clear(); bindingCache.clear();
   inflightGroup.clear(); inflightBindings.clear();
   try { delete window.__qwqnt_pgp_cfg; } catch { /* ignore */ }
@@ -126,15 +129,15 @@ export function setCached(c: PgpConfig): void {
 }
 export async function loadConfig(force = false): Promise<PgpConfig> {
   await loadAccountContext();
-  if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
+  if (!activeContext) throw new Error("当前 QQ 账号上下文不可用");
   if (cache && !force) return cache;
   if (loading && !force) return loading;
   const generation = accountGeneration;
   loading = Promise.resolve().then(() => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，取消旧配置读取');
+    if (generation !== accountGeneration) throw new Error("账号已切换，取消旧配置读取");
     return window.QwQNTPgp.getConfig();
   }).then(c => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧配置结果');
+    if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧配置结果");
     publish(c);
     window.dispatchEvent(new CustomEvent('qwqnt-pgp:config-updated', { detail: c }));
     return c;
@@ -143,27 +146,27 @@ export async function loadConfig(force = false): Promise<PgpConfig> {
 }
 export async function saveConfig(patch: Partial<PgpConfig>): Promise<PgpConfig> {
   const generation = accountGeneration;
-  if (generation !== accountGeneration) throw new Error('账号已切换，取消旧配置写入');
+  if (generation !== accountGeneration) throw new Error("账号已切换，取消旧配置写入");
   const next = await window.QwQNTPgp.setConfig(patch);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧配置结果');
+  if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧配置结果");
   setCached(next);
   return next;
 }
 
 export async function getGroupConfig(groupId: string): Promise<{ groupId: string; targets: string[] }> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  if (!isNumericId(groupId)) throw new Error('群配置需要数字群号');
+  await loadAccountContext(); if (!activeContext) throw new Error("当前 QQ 账号上下文不可用");
+  if (!isNumericId(groupId)) throw new Error("群配置需要数字群号");
   const hit = cached(groupCache, groupId); if (hit) return hit;
   const pending = inflightGroup.get(groupId); if (pending) return pending.promise;
   const entry: Pending<{ groupId: string; targets: string[] }> = { ids: new Set([groupId]), invalidated: false, promise: Promise.resolve({ groupId, targets: [] }) };
   const generation = accountGeneration;
   const request = Promise.resolve().then(() => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，取消旧群配置读取');
-    const api = dataApi(); if (!api.getGroupConfig) throw new Error('group config API unavailable');
+    if (generation !== accountGeneration) throw new Error("账号已切换，取消旧群配置读取");
+    const api = dataApi(); if (!api.getGroupConfig) throw new Error("群聊配置接口不可用");
     return api.getGroupConfig(groupId);
   }).then(result => {
-    if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧群配置');
-    if (result?.groupId !== groupId || !Array.isArray(result.targets)) throw new Error('group config response identity mismatch');
+    if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧群配置");
+    if (result?.groupId !== groupId || !Array.isArray(result.targets)) throw new Error("返回的群聊配置与当前群聊不匹配");
     const clean = { groupId, targets: [...new Set(result.targets.filter(isNumericId))] };
     if (inflightGroup.get(groupId) === entry) store(groupCache, groupId, clean);
     return clean;
@@ -176,13 +179,13 @@ export async function getGroupConfig(groupId: string): Promise<{ groupId: string
 /** Validate and lazily clean one opened group; send paths keep using the raw getter. */
 export async function prepareGroupConfig(groupId: string): Promise<{ groupId: string; targets: string[] }> {
   const context = await loadAccountContext();
-  if (!context || !isNumericId(groupId)) throw new Error('群配置需要有效账号与数字群号');
+  if (!context || !isNumericId(groupId)) throw new Error("群配置需要有效账号与数字群号");
   const generation = accountGeneration;
   const api = dataApi();
-  if (!api.prepareGroupConfig) throw new Error('group preparation API unavailable');
+  if (!api.prepareGroupConfig) throw new Error("群聊配置初始化接口不可用");
   const result = await api.prepareGroupConfig(groupId);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧群准备结果');
-  if (result?.groupId !== groupId || !Array.isArray(result.targets)) throw new Error('group prepare response identity mismatch');
+  if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧群准备结果");
+  if (result?.groupId !== groupId || !Array.isArray(result.targets)) throw new Error("初始化返回的群聊配置与当前群聊不匹配");
   const clean = { groupId, targets: [...new Set(result.targets.filter(isNumericId))] };
   const pending = inflightGroup.get(groupId);
   if (pending) { pending.invalidated = true; inflightGroup.delete(groupId); }
@@ -193,23 +196,23 @@ export function getCachedGroupConfig(groupId: string): { groupId: string; target
   return isNumericId(groupId) ? cached(groupCache, groupId) : undefined;
 }
 export async function setGroupTarget(groupId: string, uin: string, enabled: boolean): Promise<{ groupId: string; targets: string[] }> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  if (!isNumericId(groupId) || !isNumericId(uin)) throw new Error('群号和成员都必须是数字 QQ 号');
-  const api = dataApi(); if (!api.setGroupTarget) throw new Error('group target API unavailable');
+  await loadAccountContext(); if (!activeContext) throw new Error("当前 QQ 账号上下文不可用");
+  if (!isNumericId(groupId) || !isNumericId(uin)) throw new Error("群号和成员都必须是数字 QQ 号");
+  const api = dataApi(); if (!api.setGroupTarget) throw new Error("群聊加密成员接口不可用");
   const generation = accountGeneration;
-  if (generation !== accountGeneration) throw new Error('账号已切换，取消旧群配置写入');
+  if (generation !== accountGeneration) throw new Error("账号已切换，取消旧群配置写入");
   const response = await api.setGroupTarget(groupId, uin, enabled);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧群配置');
+  if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧群配置");
   const next = response && response.groupId === groupId ? response : await api.getGroupConfig?.(groupId);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧群配置');
-  if (!next || next.groupId !== groupId || !Array.isArray(next.targets)) throw new Error('group config API unavailable');
+  if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧群配置");
+  if (!next || next.groupId !== groupId || !Array.isArray(next.targets)) throw new Error("群聊配置接口不可用");
   const clean = { groupId, targets: [...new Set(next.targets.filter(isNumericId))] };
   const pending = inflightGroup.get(groupId);
   if (pending) { pending.invalidated = true; inflightGroup.delete(groupId); }
   store(groupCache, groupId, clean); emitDataChanged({ accountId: activeContext!.accountId, kind: 'group', id: groupId }); return clean;
 }
 export async function getKeyBindings(uins: string[]): Promise<KeyBinding[]> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
+  await loadAccountContext(); if (!activeContext) throw new Error("当前 QQ 账号上下文不可用");
   const generation = accountGeneration;
   const ids = [...new Set(uins.filter(isNumericId))];
   const results = new Map<string, KeyBinding>();
@@ -225,11 +228,11 @@ export async function getKeyBindings(uins: string[]): Promise<KeyBinding[]> {
     if (!pending) {
       const entry: Pending<KeyBinding[]> = { ids: new Set(chunk), invalidated: false, promise: Promise.resolve([]) };
       const request = Promise.resolve().then(() => {
-        if (generation !== accountGeneration) throw new Error('账号已切换，取消旧密钥绑定读取');
-        const api = dataApi(); if (!api.getKeyBindings) throw new Error('key binding API unavailable');
+        if (generation !== accountGeneration) throw new Error("账号已切换，取消旧密钥绑定读取");
+        const api = dataApi(); if (!api.getKeyBindings) throw new Error("公钥绑定查询接口不可用");
         return api.getKeyBindings!(chunk);
       }).then(items => {
-        if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧密钥绑定');
+        if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧密钥绑定");
         const found = new Map(items.filter(item => chunk.includes(item.uin) && typeof item.keyID === 'string' && item.keyID.trim())
           .map(item => [item.uin, { uin: item.uin, keyID: item.keyID.trim() }]));
         if (inflightBindings.get(key) === entry) {
@@ -259,13 +262,13 @@ export async function getKeyBinding(uin: string): Promise<KeyBinding | null> {
   return (await getKeyBindings([uin]))[0] ?? null;
 }
 export async function setKeyBinding(uin: string, keyID: string | null): Promise<void> {
-  await loadAccountContext(); if (!activeContext) throw new Error('当前 QQ 账号上下文不可用');
-  if (!isNumericId(uin)) throw new Error('绑定需要数字 QQ 号');
-  const api = dataApi(); if (!api.setKeyBinding) throw new Error('set key binding API unavailable');
+  await loadAccountContext(); if (!activeContext) throw new Error("当前 QQ 账号上下文不可用");
+  if (!isNumericId(uin)) throw new Error("绑定需要数字 QQ 号");
+  const api = dataApi(); if (!api.setKeyBinding) throw new Error("公钥绑定保存接口不可用");
   const generation = accountGeneration;
-  if (generation !== accountGeneration) throw new Error('账号已切换，取消旧密钥绑定写入');
+  if (generation !== accountGeneration) throw new Error("账号已切换，取消旧密钥绑定写入");
   const binding = await api.setKeyBinding(uin, keyID);
-  if (generation !== accountGeneration) throw new Error('账号已切换，丢弃旧密钥绑定');
+  if (generation !== accountGeneration) throw new Error("账号已切换，丢弃旧密钥绑定");
   for (const [key, pending] of inflightBindings) if (pending.ids.has(uin)) {
     pending.invalidated = true;
     inflightBindings.delete(key);

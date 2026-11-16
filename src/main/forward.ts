@@ -18,7 +18,7 @@ export const CMD_RECV_LONG_MSG = 'trpc.group.long_msg_interface.MsgService.SsoRe
 
 function varint(value: number): Buffer {
   if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-    throw new Error('合并转发字段超出 uint32 范围');
+    throw new Error("合并转发字段超出 uint32 范围");
   }
   const bytes: number[] = [];
   while (value > 127) {
@@ -87,13 +87,13 @@ function writeForwardNode(writer: Buffer[], node: ForwardNode, selfUid: string):
 }
 
 export function buildUploadPacket(selfUid: string, nodes: ForwardNode[], groupUin: number) {
-  if (!selfUid.trim()) throw new Error('上传合并转发需要登录 UID');
-  if (!nodes.length) throw new Error('合并转发至少需要一条消息');
+  if (!selfUid.trim()) throw new Error("上传合并转发需要登录 UID");
+  if (!nodes.length) throw new Error("合并转发至少需要一条消息");
   if (groupUin !== 0 && (!Number.isSafeInteger(groupUin) || groupUin < 0)) {
-    throw new Error('群号必须是有效的非负整数');
+    throw new Error("群号必须是有效的非负整数");
   }
   if (nodes.some(n => !Number.isFinite(n.time) || !String(n.text).length)) {
-    throw new Error('转发节点时间或文本无效');
+    throw new Error("转发节点时间或文本无效");
   }
 
   const content: Buffer[] = [];
@@ -144,14 +144,14 @@ function* readMessages(data: Uint8Array, field: number): Generator<Uint8Array> {
         return value;
       }
     }
-    throw new Error('合并转发回包中的 varint 无效');
+    throw new Error("合并转发回包中的 varint 无效");
   }
   const groups: number[] = [];
   while (position < data.length) {
     const key = readVarint(5);
     const tag = key >>> 3;
     const wire = key & 7;
-    if (!tag || wire > 5) throw new Error('合并转发回包字段无效');
+    if (!tag || wire > 5) throw new Error("合并转发回包字段无效");
     if (wire === 0) readVarint(10);
     if (wire === 1) position += 8;
     if (wire === 2) {
@@ -161,11 +161,11 @@ function* readMessages(data: Uint8Array, field: number): Generator<Uint8Array> {
       if (position <= data.length && !groups.length && tag === field) yield data.subarray(start, position);
     }
     if (wire === 3) groups.push(tag);
-    if (wire === 4 && groups.pop() !== tag) throw new Error('合并转发回包字段无效');
+    if (wire === 4 && groups.pop() !== tag) throw new Error("合并转发回包字段无效");
     if (wire === 5) position += 4;
-    if (position > data.length) throw new Error('合并转发回包被截断');
+    if (position > data.length) throw new Error("合并转发回包被截断");
   }
-  if (groups.length) throw new Error('合并转发回包被截断');
+  if (groups.length) throw new Error("合并转发回包被截断");
 }
 
 function lastField(data: Uint8Array, outer: number, inner: number): Uint8Array | undefined {
@@ -180,7 +180,7 @@ const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
 export function parseUploadResponse(data: Uint8Array): UploadResult {
   const resId = decoder.decode(lastField(data, 2, 3));
-  if (!resId) throw new Error('上传合并转发失败：回包里没有 resId');
+  if (!resId) throw new Error("上传合并转发失败：回包里没有 resId");
   return { resId };
 }
 

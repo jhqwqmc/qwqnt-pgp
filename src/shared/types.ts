@@ -7,6 +7,7 @@ export type SendPolicy = 'manual' | 'auto' | 'off';
 
 /** 插件配置 */
 export interface PgpConfig {
+  locale?: string;
   /** 自动解密（默认 true = 扫到密文/转发卡片就直接显示解密内容，仍可切回原文） */
   autoDecrypt: boolean;
   /** 发送策略：manual = 按快捷键才加密；auto = 拦截纯文本发送并加密；off = 不加密 */
@@ -99,6 +100,7 @@ export interface DecryptResult {
 
 export interface SendResult {
   ok: boolean;
+  notice?: string;
   /** 素材消息 ID（伪造转发只有一条卡片，这里是卡片 msgId） */
   msgId?: string;
   /** 失败原因 */

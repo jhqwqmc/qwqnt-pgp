@@ -1,3 +1,4 @@
+import { defaultLocale, supportedLocales } from '../shared/i18n';
 /** Scalar plugin settings. Contact/group data lives in entity-storage.ts. */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { initEntityStorage } from './entity-storage';
 import { log } from './log';
 
 export const DEFAULT_CONFIG: PgpConfig = {
+  locale: defaultLocale,
   autoDecrypt: false,
   sendPolicy: 'manual',
   hotkey: 'Ctrl+/',
@@ -78,11 +80,11 @@ function writeConfigFile(configPath: string, config: PgpConfig): void {
 
 function accountDir(accountId: string): string {
   const id = requireAccountId(accountId);
-  if (!accountsDir) throw new Error('账号配置存储尚未初始化');
+  if (!accountsDir) throw new Error("账号配置存储尚未初始化");
   return join(accountsDir, id);
 }
 function requireAccountId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[1-9]\d{0,19}$/.test(value)) throw new Error('当前账号身份未确认');
+  if (typeof value !== 'string' || !/^[1-9]\d{0,19}$/.test(value)) throw new Error("当前账号身份未确认");
   return value;
 }
 function trimCache(): void { while (cache.size > MAX_ACCOUNTS) cache.delete(cache.keys().next().value!); }
@@ -95,5 +97,6 @@ function normalize(raw: Partial<PgpConfig> | null): PgpConfig {
     if (typeof supplied === typeof cfg[key] && supplied !== null) Object.assign(cfg, { [key]: supplied });
   }
   if (!['manual', 'auto', 'off'].includes(cfg.sendPolicy)) cfg.sendPolicy = DEFAULT_CONFIG.sendPolicy;
+  if (!cfg.locale || !supportedLocales.includes(cfg.locale)) cfg.locale = defaultLocale;
   return cfg;
 }

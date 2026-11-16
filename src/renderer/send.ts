@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 import { buildCiphertextCard } from '../shared/forward-card';
 import { isDirectChat } from '../shared/chat-type';
 /**
@@ -19,17 +20,18 @@ export interface SendOptions {
   plaintext: string;
   peer: PeerTarget;
   keyIDs?: string[];
+  onEncrypting?: () => void;
 }
 
 interface SendAccount { accountId: string; generation: number }
 function currentSendAccount(): SendAccount {
   const accountId = getActiveAccountId();
-  if (!accountId) throw new Error('当前 QQ 账号上下文不可用');
+  if (!accountId) throw new Error("当前 QQ 账号上下文不可用");
   return { accountId, generation: getAccountGeneration() };
 }
 function assertSendAccount(account: SendAccount): void {
   if (account.generation !== getAccountGeneration() || account.accountId !== getActiveAccountId()) {
-    throw new Error('账号已切换，已取消旧账号发送');
+    throw new Error("账号已切换，已取消旧账号发送");
   }
 }
 
@@ -41,7 +43,7 @@ async function resolveGroupId(peer: PeerTarget): Promise<string> {
   const groupId = getUinByUid(peer.peerUid) || peer.peerUid;
   if (isNumericUin(groupId)) return groupId;
   const resolved = await resolvePeerUin(peer.peerUid);
-  if (!isNumericUin(resolved)) throw new Error('无法解析数字群号，已阻止配置读取和加密发送');
+  if (!isNumericUin(resolved)) throw new Error("无法解析数字群号，已阻止配置读取和加密发送");
   return resolved;
 }
 
@@ -96,7 +98,7 @@ async function resolveRecipients(peer: PeerTarget, cfg: PgpConfig, selfUin: stri
   if (peer.chatType === 2) {
     const missing: string[] = [];
     for (const uin of groupTargets) {
-      if (!isNumericUin(uin)) throw new Error('群加密成员必须使用数字 QQ 号，请重新选择成员');
+      if (!isNumericUin(uin)) throw new Error("群加密成员必须使用数字 QQ 号，请重新选择成员");
       // The backend always adds the signing private key's public key. The UI
       // also persists the current user as a selected target, even without an
       // explicit binding, so don't treat that implicit own recipient as missing.
@@ -116,10 +118,10 @@ async function resolveRecipients(peer: PeerTarget, cfg: PgpConfig, selfUin: stri
 /** 主入口：加密 + 发伪造聊天记录卡片 */
 export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
   const { peer, plaintext } = opts;
-  if (!isDirectChat(peer.chatType) && peer.chatType !== 2) return { ok: false, error: '当前会话不支持加密发送' };
+  if (!isDirectChat(peer.chatType) && peer.chatType !== 2) return { ok: false, notice: t("send.unsupportedConversation") };
   try {
     const context = await loadAccountContext();
-    if (!context) throw new Error('当前 QQ 账号上下文不可用');
+    if (!context) throw new Error("当前 QQ 账号上下文不可用");
     const account = { accountId: context.accountId, generation: getAccountGeneration() };
     assertSendAccount(account);
     const cfg = await loadConfig();
@@ -139,16 +141,16 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
     } else {
       peerUin = getUinByUid(peer.peerUid) || await resolvePeerUin(peer.peerUid);
       assertSendAccount(account);
-      if (!isNumericUin(peerUin)) return { ok: false, error: '无法解析私聊对象数字 QQ 号，已阻止发送' };
+      if (!isNumericUin(peerUin)) return { ok: false, notice: t("send.peerQqUnavailable") };
     }
     const direct = isDirectChat(peer.chatType) ? await window.QwQNTPgp.getDirectBinding(peerUin) : null;
     assertSendAccount(account);
-    if (direct && !direct.enabled) return { ok: false, error: '请先绑定对方公钥并在聊天详情开启加密' };
+    if (direct && !direct.enabled) return { ok: false, notice: t("send.directEncryptionDisabled") };
     const bindings = direct?.binding ? [direct.binding] : await getKeyBindings(groupTargets);
     assertSendAccount(account);
     if (peer.chatType === 2) {
       if (!groupTargets.some(uin => uin !== selfUin && bindings.some(binding => binding.uin === uin && binding.keyID.trim()))) {
-        return { ok: false, error: '群聊加密至少需要开启一位已绑定公钥的其他成员；仅选自己不会加密发送' };
+        return { ok: false, notice: t("send.noEnabledGroupMember") };
       }
     }
 
@@ -161,7 +163,7 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
     }
     log(`收件人：${JSON.stringify(recipients)}（会话 ${JSON.stringify(peer)}）`);
     if (!recipients.length) {
-      return { ok: false, error: '没有可用的收件人公钥：请先设好自己的公钥，或在群里勾选要加密的成员' };
+      return { ok: false, notice: t("send.noRecipientKey") };
     }
 
     if (peer.chatType === 2) {
@@ -170,7 +172,7 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
         .map(uin => bindings.find(item => isNumericUin(item.uin) && item.uin === uin)?.keyID)
         .filter((keyID): keyID is string => Boolean(keyID?.trim()));
       if (!requiredKeys.some(keyID => recipients.includes(keyID))) {
-        return { ok: false, error: '显式收件人未包含任何已开启群成员的公钥，已阻止发送' };
+        return { ok: false, notice: t("send.groupRecipientKeyMissing") };
       }
     }
 
@@ -178,9 +180,10 @@ export async function sendEncrypted(opts: SendOptions): Promise<SendResult> {
       const binding = bindings.find(item => isNumericUin(item.uin) && item.uin === peerUin);
       const hasPeerKey = binding?.keyID && recipients.includes(binding.keyID);
       if (!hasPeerKey) {
-        return { ok: false, error: `私聊对象 ${peer.name || peerUin || ''} 没有已绑定的公钥；请先按数字 QQ 号绑定对方公钥` };
+        return { ok: false, notice: t("send.bindPeerKeyFirst") };
       }
     }
+    opts.onEncrypting?.();
     const armored = await window.QwQNTPgp.encrypt(plaintext, recipients);
     assertSendAccount(account);
     log(`加密完成：${armored.length} 字符`);
@@ -218,7 +221,7 @@ async function sendFakeForward(
     assertSendAccount(account);
     const up = await window.QwQNTPgp.forwardUpload({ selfUid, nodes, groupId });
     assertSendAccount(account);
-    if (!up.resId) throw new Error('服务器没有返回转发记录 ID');
+    if (!up.resId) throw new Error("服务器没有返回转发记录 ID");
     resId = up.resId;
     log(`上传合并转发成功：resId=${resId}`);
   } catch (err) {

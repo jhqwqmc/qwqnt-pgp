@@ -2,18 +2,35 @@ const MAX_TOASTS = 5;
 const FADE_MS = 250;
 const timers = new Map<HTMLElement, number>();
 let stack: HTMLElement | undefined;
+let latest: { text: string; element: HTMLElement; countLabel: HTMLElement; count: number } | undefined;
 
 function removeToast(element: HTMLElement): void {
   window.clearTimeout(timers.get(element));
   timers.delete(element);
   element.remove();
+  if (latest?.element === element) latest = undefined;
   if (timers.size === 0) {
     stack?.remove();
     stack = undefined;
   }
 }
 
+function scheduleDismiss(element: HTMLElement, timeout: number): void {
+  window.clearTimeout(timers.get(element));
+  element.style.opacity = '';
+  timers.set(element, window.setTimeout(() => {
+    element.style.opacity = '0';
+    timers.set(element, window.setTimeout(() => removeToast(element), FADE_MS));
+  }, timeout));
+}
+
 export function toast(text: string, timeout = 2600): void {
+  if (latest?.text === text) {
+    latest.countLabel.textContent = `x${++latest.count}`;
+    latest.countLabel.hidden = false;
+    scheduleDismiss(latest.element, timeout);
+    return;
+  }
   if (!stack) {
     stack = document.createElement('div');
     stack.style.cssText = [
@@ -36,11 +53,12 @@ export function toast(text: string, timeout = 2600): void {
     `transition:opacity ${FADE_MS}ms`
   ].join(';');
   stack.append(element);
-  element.textContent = text;
-  timers.set(element, window.setTimeout(() => {
-    element.style.opacity = '0';
-    timers.set(element, window.setTimeout(() => removeToast(element), FADE_MS));
-  }, timeout));
+  const countLabel = document.createElement('small');
+  countLabel.style.cssText = 'font-size:.82em;opacity:.72;white-space:nowrap;margin-inline-start:.45em';
+  countLabel.hidden = true;
+  element.append(text, countLabel);
+  latest = { text, element, countLabel, count: 1 };
+  scheduleDismiss(element, timeout);
 
   for (const oldest of timers.keys()) {
     if (timers.size <= MAX_TOASTS && stack.scrollHeight <= stack.clientHeight) break;

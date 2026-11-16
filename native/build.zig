@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
     const module = b.createModule(.{
         .target = target,
         .optimize = .ReleaseFast,
+        .strip = true,
         .link_libc = true,
     });
     module.addCSourceFile(.{

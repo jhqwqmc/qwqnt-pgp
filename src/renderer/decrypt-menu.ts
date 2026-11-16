@@ -1,10 +1,12 @@
+import { t } from '../shared/i18n';
+import { isOperationCancelled } from '../shared/decrypt-errors';
 /** Adds PGP actions to QQ's own message context menu. */
-import { manualDecrypt } from './message';
+import { canManuallyDecrypt, manualDecrypt, PgpDecryptionFailure } from './message';
 import { getCached, loadConfig } from './config-cache';
 import { toast } from './toast';
 
 const ITEM_ID = 'qwqnt-pgp-decrypt';
-const MESSAGE_CONTENT_SELECTOR = '.message-container > .message-content__wrapper';
+const MESSAGE_CONTENT_SELECTOR = '.message-container .message-content__wrapper';
 let installed = false;
 let contextOwner: WeakRef<Element> | null = null;
 let contextAt = 0;
@@ -109,6 +111,11 @@ function attachMenuItem(): void {
   }) ?? null;
   if (!menu) return;
   const existing = menu.querySelector<HTMLElement>(`#${ITEM_ID}`);
+  if (document.querySelector('.forward-title-bar') && !canManuallyDecrypt(owner)) {
+    if (existing) existing.style.display = 'none';
+    menuOwners.delete(menu);
+    return;
+  }
   if (existing) {
     menuOwners.set(menu, ownerRef);
     if (existing.style.display === 'none') existing.style.removeProperty('display');
@@ -153,7 +160,7 @@ function attachMenuItem(): void {
   cleanStyleAttributes(item, true);
   for (const element of item.querySelectorAll<HTMLElement>('*')) cleanStyleAttributes(element);
   if (label) label.removeAttribute('title');
-  label.textContent = '解密';
+  label.textContent = t("decrypt.action");
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('width', '16');
   icon.setAttribute('height', '16');
@@ -174,14 +181,18 @@ function attachMenuItem(): void {
     content.insertBefore(slot, label.parentNode === content ? label : null);
     if (!label.parentNode) content.append(label);
   }
-  item.setAttribute('aria-label', '解密');
+  item.setAttribute('aria-label', t("decrypt.action"));
   const decrypt = (): void => {
     const boundOwner = menuOwners.get(menu);
     const targetOwner = boundOwner?.deref();
     if (getCached()?.autoDecrypt !== false || boundOwner !== contextOwner ||
       Date.now() - contextAt > OWNER_TIMEOUT_MS || !targetOwner?.isConnected || inFlight.has(targetOwner)) return;
     inFlight.add(targetOwner);
-    void manualDecrypt(targetOwner).catch(() => toast('解密失败')).finally(() => inFlight.delete(targetOwner));
+    void manualDecrypt(targetOwner).catch(error => {
+      if (error instanceof PgpDecryptionFailure) {
+        toast(t(isOperationCancelled(error) ? 'error.operationCancelled' : 'decrypt.failed'));
+      }
+    }).finally(() => inFlight.delete(targetOwner));
     queueMicrotask(() => {
       if (boundOwner !== contextOwner || !menu.isConnected || !menu.getClientRects().length) return;
       item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));

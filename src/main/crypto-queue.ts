@@ -9,7 +9,7 @@ export class BoundedCryptoQueue {
   run<T>(bytes: number, operation: () => Promise<T>): Promise<T> {
     const size = Math.max(0, Math.ceil(bytes));
     if (this.pendingCount >= this.maxCount || this.pendingBytes + size > this.maxBytes) {
-      return Promise.reject(new Error('加密队列已满，请稍后重试'));
+      return Promise.reject(new Error("加密队列已满，请稍后重试"));
     }
     this.pendingCount++;
     this.pendingBytes += size;

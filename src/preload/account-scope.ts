@@ -32,10 +32,10 @@ export function createPreloadAccountScope(fetchContext: () => Promise<ScopedAcco
     const wasUninitialized = active === undefined || active === null;
     const context = wasUninitialized ? await accountContext() : active;
     if (wasUninitialized) start = epoch;
-    if (!context) throw new Error('当前QQ账号身份尚未确认');
-    if (start !== epoch || !same(active, context)) throw new Error('QQ账号已切换，请重试');
+    if (!context) throw new Error("当前QQ账号身份尚未确认");
+    if (start !== epoch || !same(active, context)) throw new Error("QQ账号已切换，请重试");
     const value = await rawInvoke<T>(channel, { accountId: context.accountId, selfUid: context.selfUid, revision: context.revision }, ...args);
-    if (start !== epoch || !same(active, context)) throw new Error('QQ账号已切换，请重试');
+    if (start !== epoch || !same(active, context)) throw new Error("QQ账号已切换，请重试");
     return value;
   };
 

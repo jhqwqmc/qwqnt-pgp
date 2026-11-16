@@ -2,9 +2,18 @@
 
 QwQNT 的 PGP 加密插件，使用本机 GnuPG 对 QQ 文本消息加密、签名和解密。加密消息以合并转发卡片发送。
 
+本插件仅在 QQ **9.9.36-53644** 上开发和测试，目前仅支持 Windows。
+
 ## 安装
 
-1. 安装 QwQNT 和 GnuPG。Windows 上可以使用 Gpg4win。
+运行时依赖：
+
+| 依赖 | 版本要求 | 下载 |
+| --- | --- | --- |
+| qwqnt-hako | `^1.0.0` | [Releases](https://github.com/qwqnt-community/qwqnt-hako/releases) |
+| qwqnt-ipc-interceptor | `^1.2.1` | [Releases](https://github.com/qwqnt-community/qwqnt-ipc-interceptor/releases) |
+
+1. 安装 QwQNT、上表的两个依赖和 GnuPG。Windows 上可以使用 Gpg4win。
 2. 将 `qwqnt-pgp.zip` 解压到 QwQNT 插件目录下的 `qwqnt-pgp` 文件夹。
 3. 重启 QQ，在设置中打开「PGP 加密」。
 

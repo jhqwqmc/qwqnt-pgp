@@ -19,10 +19,10 @@ function upperBound(ranges: Range[], address: number): number {
 
 export async function resolveWindowsX64Offsets(path: string): Promise<[string, string]> {
   const file = await readFile(path);
-  if (file.readUInt16LE(0) !== 0x5a4d) throw new Error('QQ 内核缺少 DOS 标头');
+  if (file.readUInt16LE(0) !== 0x5a4d) throw new Error("QQ 内核缺少 DOS 标头");
   const pe = file.readUInt32LE(0x3c);
   if (file.readUInt32LE(pe) !== 0x4550 || file.readUInt16LE(pe + 4) !== 0x8664 ||
-      file.readUInt16LE(pe + 24) !== 0x20b) throw new Error('当前内核不是 Windows x64 PE');
+      file.readUInt16LE(pe + 24) !== 0x20b) throw new Error("当前内核不是 Windows x64 PE");
 
   const sections = new Map<string, Section>();
   const table = pe + 24 + file.readUInt16LE(pe + 20);
@@ -36,17 +36,17 @@ export async function resolveWindowsX64Offsets(path: string): Promise<[string, s
   const text = sections.get('.text');
   const pdata = sections.get('.pdata');
   const rdata = sections.get('.rdata');
-  if (!text || !pdata || !rdata) throw new Error('QQ 内核缺少必需的 PE 节');
+  if (!text || !pdata || !rdata) throw new Error("QQ 内核缺少必需的 PE 节");
   function readRva(rva: number): Buffer {
     for (const section of sections.values()) {
       const offset = rva - section.address;
       if (offset >= 0 && offset < section.data.length) return section.data.subarray(offset);
     }
-    throw new Error('QQ 内核包含无效 RVA');
+    throw new Error("QQ 内核包含无效 RVA");
   }
   const imports = new Map<number, string>();
   const importRva = file.readUInt32LE(pe + 24 + 120);
-  if (!importRva) throw new Error('QQ 内核缺少导入表');
+  if (!importRva) throw new Error("QQ 内核缺少导入表");
   const descriptors = readRva(importRva);
   for (let i = 0; i + 20 <= descriptors.length; i += 20) {
     const iat = descriptors.readUInt32LE(i + 16);

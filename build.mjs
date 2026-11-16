@@ -5,12 +5,15 @@ import { isBuiltin } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { createPackage, listPackage } from '@electron/asar';
 import JSZip from 'jszip';
 import { build } from 'vite';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const source = join(root, 'src');
 const output = join(root, 'dist');
+const payload = join(output, '.payload');
+const archiveName = 'plugin.asar';
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const formats = { main: 'es', preload: 'cjs', renderer: 'es', offsetWorker: 'es' };
 
@@ -69,7 +72,7 @@ async function buildSsoBridge() {
   const cache = join(root, 'tools', 'zig-cache');
   try {
     const result = await run(zig, [
-      'build', '--prefix', output,
+      'build', '--prefix', payload,
       '--cache-dir', join(cache, 'local'),
       '--global-cache-dir', join(cache, 'global'),
     ], {
@@ -96,7 +99,7 @@ for (const [entry, format] of Object.entries(formats)) {
     root,
     resolve: { alias: { '@': source } },
     build: {
-      outDir: output,
+      outDir: payload,
       emptyOutDir: false,
       target: entry === 'main' || worker ? 'node23' : undefined,
       minify: false,
@@ -113,9 +116,21 @@ for (const [entry, format] of Object.entries(formats)) {
   });
 }
 
-for (const path of ['package.json', 'icon.svg', 'LICENSE']) {
-  await cp(join(root, path), join(output, path), { recursive: true });
+for (const path of ['icon.svg', 'LICENSE']) {
+  await cp(join(root, path), join(payload, path));
 }
+await writeFile(join(payload, 'package.json'), JSON.stringify({ type: manifest.type }));
+const archive = join(output, archiveName);
+await createPackage(payload, archive);
+const archiveEntries = new Set(listPackage(archive).map(path => path.replaceAll('\\', '/')));
+for (const path of [...Object.values(manifest.qwqnt.inject), './main/offset-worker.js', './main/sso-bridge-win-x64.node', './icon.svg', './LICENSE']) {
+  if (!archiveEntries.has(path.slice(1))) throw new Error(`Missing ASAR entry: ${path}`);
+}
+manifest.qwqnt.inject = Object.fromEntries(Object.entries(manifest.qwqnt.inject).map(
+  ([entry, path]) => [entry, `./${archiveName}/${path.replace(/^\.\//, '')}`]
+));
+await writeFile(join(output, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+await rm(payload, { recursive: true, force: true });
 const zip = new JSZip();
 for (const entry of await readdir(output, { recursive: true, withFileTypes: true })) {
   if (!entry.isFile()) continue;
@@ -125,4 +140,5 @@ for (const entry of await readdir(output, { recursive: true, withFileTypes: true
 await writeFile(join(root, `${manifest.name}.zip`), await zip.generateAsync({
   type: 'nodebuffer',
   compression: 'DEFLATE',
+  compressionOptions: { level: 9 },
 }));

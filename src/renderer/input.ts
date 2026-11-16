@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n';
+import { isOperationCancelled } from '../shared/decrypt-errors';
 /**
  * 输入框侧：根据配置的「发送策略」决定什么时候加密。
  *  - manual：按配置的快捷键（默认 Ctrl+/）才加密发送
@@ -77,7 +79,7 @@ export function startInputWatcher(): void {
     void refresh().catch(() => { policy = 'off'; });
   });
   window.QwQNTPgp.onAutoSendFailure(info => handleAutoSendFailure(info));
-  log('输入框监听已启动');
+  log("输入框监听已启动");
 }
 
 async function refresh(): Promise<void> {
@@ -101,8 +103,8 @@ function onKeyDownCapture(e: KeyboardEvent): void {
   // 前 10 次按键打个日志，方便确认监听有没有挂上、编辑器识别对不对
   if (keyDebugCount < 10) {
     keyDebugCount++;
-    const t = e.target instanceof Element ? e.target : null;
-    log(`按键捕获：key=${e.key} code=${e.code} target=${t ? `${t.tagName}.${String((t as HTMLElement).className ?? '').slice(0, 50)}` : '?'} policy=${p}`);
+    const element = e.target instanceof Element ? e.target : null;
+    log(`按键捕获：key=${e.key} code=${e.code} target=${element ? `${element.tagName}.${String(element.className ?? '').slice(0, 50)}` : '?'} policy=${p}`);
   }
   // 先看按键目标是不是在编辑器里（避免每次按键都查全 DOM）
   const target = e.target;
@@ -127,10 +129,12 @@ async function verifyAutoHook(): Promise<void> {
   try {
     const status = await window.QwQNTPgp.getAutoSendInterceptorStatus();
     if (status?.available) { autoHookWarning = ''; return; }
-    const reason = status?.reason || '自动发送拦截不可用';
+    if (status?.reason) log(`自动发送拦截不可用：${status.reason}`);
+    const reason = t("compose.autoSendUnavailable");
     if (autoHookWarning !== reason) { autoHookWarning = reason; toast(reason); }
   } catch (err) {
-    const reason = `自动发送状态读取失败：${String(err)}`;
+    log(`自动发送状态读取失败：${String(err)}`);
+    const reason = t("compose.autoSendStatusFailed");
     if (autoHookWarning !== reason) { autoHookWarning = reason; toast(reason); }
   }
 }
@@ -144,7 +148,9 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
     if (epoch !== inputAccountEpoch || !context || (info.accountId && info.accountId !== context.accountId) ||
       getActiveAccountId() !== context.accountId || getCurrentPeer()?.peerUid !== info.peerUid) return;
     const tooLarge = info.error.includes(FORWARD_TEXT_TOO_LARGE);
-    if (tooLarge) toast(FORWARD_TEXT_TOO_LARGE);
+    const cancelled = isOperationCancelled(info.error);
+    if (tooLarge) toast(t('forward.textTooLarge'));
+    else if (cancelled) toast(t('error.operationCancelled'));
     const editor = document.querySelector<HTMLElement>('.chat-input-area .ProseMirror, .chat-input-area [contenteditable="true"], .chat-input .ProseMirror, .chat-input [contenteditable="true"]');
     if (!editor) return;
     window.requestAnimationFrame(() => {
@@ -159,7 +165,7 @@ function handleAutoSendFailure(info: { accountId?: string; peerUid: string; msgI
           editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
           editor.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        if (!tooLarge) toast('自动加密发送失败，明文已放回输入框');
+        if (!tooLarge && !cancelled) toast(t("compose.autoSendFailedDraftRestored"));
         log(`自动发送失败已恢复草稿 peer=${info.peerUid} msgId=${info.msgId} error=${info.error}`);
       } catch (err) { log(`恢复自动发送草稿失败：${String(err)}`); }
     });
@@ -194,7 +200,7 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
   if (sending) return;
   // 兜底：不管从哪条路径进来，off 一律不加密
   if ((getCached()?.sendPolicy ?? policy) === 'off') {
-    log('发送策略是 off，跳过加密');
+    log("发送策略是 off，跳过加密");
     return;
   }
   sending = true;
@@ -202,7 +208,7 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
   try {
     const plaintext = getEditorText(editor);
     if (!plaintext.trim()) {
-      toast('没有可加密的内容');
+      toast(t("compose.emptyMessage"));
       return;
     }
     const originalPeer = getCurrentPeer(editor);
@@ -210,33 +216,34 @@ async function handleEncrypt(editor: HTMLElement): Promise<void> {
     if (epoch !== inputAccountEpoch) return;
     const peer = getCurrentPeer(editor);
     if (!peer) {
-      toast('未能读取这个输入框的会话');
+      toast(t("compose.conversationUnavailable"));
       return;
     }
     if (originalPeer && (originalPeer.peerUid !== peer.peerUid || originalPeer.chatType !== peer.chatType)) {
-      toast('会话已切换，已取消发送');
+      toast(t("compose.conversationChanged"));
       return;
     }
     log(`开始加密发送：明文 ${plaintext.length} 字符；会话=${JSON.stringify(peer)}`);
-    toast('加密中…');
-
     const res = await sendEncrypted({
       plaintext,
-      peer
+      peer,
+      onEncrypting: () => { if (epoch === inputAccountEpoch) toast(t("compose.encrypting")); },
     });
     if (epoch !== inputAccountEpoch) return;
 
     if (res.ok) {
       // 等待加密/发送期间若用户继续编辑，不要误删新输入。
       if (getEditorText(editor) === plaintext) clearEditor(editor);
-      toast(`已发送`);
+      toast(t("compose.sent"));
     } else {
-      toast(res.error?.includes(FORWARD_TEXT_TOO_LARGE) ? FORWARD_TEXT_TOO_LARGE : res.error ?? '发送失败');
+      const error = res.error ?? t("compose.sendFailed");
+      toast(isOperationCancelled(error) ? t('error.operationCancelled')
+        : res.notice ?? (error.includes(FORWARD_TEXT_TOO_LARGE) ? t('forward.textTooLarge') : t('compose.sendFailed')));
       log(`发送失败：${res.error}`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    toast(msg);
+    toast(isOperationCancelled(msg) ? t('error.operationCancelled') : t('compose.sendFailed'));
     log(`加密发送异常：${msg}`);
   } finally {
     sending = false;

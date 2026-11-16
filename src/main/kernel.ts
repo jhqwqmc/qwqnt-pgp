@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 /**
  * 通过当前 QQ 会话访问内核的消息服务。
  *
@@ -101,7 +102,7 @@ export function getWrapper(): AnyObj | null {
   const paths = findWrapperPaths();
   log(`[kernel] wrapper.node 候选：${JSON.stringify(paths)}`);
   if (paths.length !== 1) {
-    log('[kernel] 无法唯一确认当前 QQ 内核');
+    log("[kernel] 无法唯一确认当前 QQ 内核");
     return null;
   }
   for (const p of paths) {
@@ -126,7 +127,7 @@ export function getSession(): AnyObj | null {
   if (!w) return null;
   const cls = w['NodeIQQNTWrapperSession'];
   if (!cls) {
-    log('[kernel] 找不到 NodeIQQNTWrapperSession');
+    log("[kernel] 找不到 NodeIQQNTWrapperSession");
     return null;
   }
   try {
@@ -135,7 +136,7 @@ export function getSession(): AnyObj | null {
     log(`[kernel] getNTWrapperSession 失败：${err instanceof Error ? err.message : String(err)}`);
     session = null;
   }
-  if (session) log('[kernel] 已拿到 wrapper session（nt_1）');
+  if (session) log("[kernel] 已拿到 wrapper session（nt_1）");
   return session;
 }
 
@@ -204,7 +205,7 @@ export async function getMessageRecord(accountId: string, peer: ArkPeer, msgId: 
       const response = await Promise.race([
         Promise.resolve().then(() => svc.getMsgsByMsgId(requestPeer, [msgId])),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('读取消息记录超时（20 秒）')), 20000);
+          timer = setTimeout(() => reject(new Error("读取消息记录超时（20 秒）")), 20000);
         })
       ]);
       const code = Number(response?.result ?? response?.errCode ?? 0);
@@ -265,7 +266,7 @@ export async function resolveUin(uid: string): Promise<string> {
   try {
     const convert = session.getUixConvertService?.();
     if (convert?.getUin) {
-      const result = await withKernelTimeout('UID 转换', Promise.resolve().then(() => convert.getUin([key])));
+      const result = await withKernelTimeout("UID 转换", Promise.resolve().then(() => convert.getUin([key])));
       const uin = result?.uinInfo instanceof Map ? result.uinInfo.get(key) : result?.uinInfo?.[key];
       if (isNumericUin(uin)) return String(uin).trim();
     }
@@ -276,7 +277,7 @@ export async function resolveUin(uid: string): Promise<string> {
   try {
     const group = session.getGroupService?.();
     if (group?.getUinByUids) {
-      const result = await withKernelTimeout('群服务 UID 转换', Promise.resolve().then(() => group.getUinByUids([key])));
+      const result = await withKernelTimeout("群服务 UID 转换", Promise.resolve().then(() => group.getUinByUids([key])));
       if (result?.errCode !== undefined && Number(result.errCode) !== 0) {
         throw new Error(`errCode=${String(result.errCode)} ${String(result.errMsg ?? '')}`);
       }
@@ -293,14 +294,14 @@ export async function listFriends(): Promise<Array<{ uin: string; name: string }
   const session = getSession();
   const buddy = session?.getBuddyService?.();
   const profile = session?.getProfileService?.();
-  if (!buddy?.getBuddyListV2 || !profile?.getCoreAndBaseInfo) throw new Error('当前 QQ 好友服务不可用');
-  const result = await withKernelTimeout('读取好友列表', Promise.resolve().then(() => buddy.getBuddyListV2('0', true, 0)));
-  if (!Array.isArray(result?.data)) throw new Error('QQ 未返回好友列表');
+  if (!buddy?.getBuddyListV2 || !profile?.getCoreAndBaseInfo) throw new Error("当前 QQ 好友服务不可用");
+  const result = await withKernelTimeout("读取好友列表", Promise.resolve().then(() => buddy.getBuddyListV2('0', true, 0)));
+  if (!Array.isArray(result?.data)) throw new Error("QQ 未返回好友列表");
   const uids = [...new Set<string>(result.data.flatMap((group: { buddyUids?: string[] }) => group.buddyUids ?? []))];
   const friends = new Map<string, { uin: string; name: string }>();
   for (let offset = 0; offset < uids.length; offset += 256) {
     const batch = uids.slice(offset, offset + 256);
-    const profiles = await withKernelTimeout('读取好友资料', Promise.resolve().then(() => profile.getCoreAndBaseInfo('nodeStore', batch)));
+    const profiles = await withKernelTimeout("读取好友资料", Promise.resolve().then(() => profile.getCoreAndBaseInfo('nodeStore', batch)));
     for (const uid of batch) {
       const info = profiles instanceof Map ? profiles.get(uid) : profiles?.[uid];
       const value = info?.uin || info?.coreInfo?.uin;
@@ -313,14 +314,14 @@ export async function listFriends(): Promise<Array<{ uin: string; name: string }
 }
 
 export async function lookupContact(uin: string): Promise<{ uin: string; name: string }> {
-  if (typeof uin !== 'string' || !/^[1-9]\d{0,19}$/.test(uin)) throw new Error('请输入有效的数字 QQ 号');
+  if (typeof uin !== 'string' || !/^[1-9]\d{0,19}$/.test(uin)) throw new Error(t("contact.invalidQqNumber"));
   const session = getSession();
   const convert = session?.getUixConvertService?.();
   const profile = session?.getProfileService?.();
-  const converted = await withKernelTimeout('读取联系人 UID', Promise.resolve().then(() => convert?.getUid?.([uin])));
+  const converted = await withKernelTimeout("读取联系人 UID", Promise.resolve().then(() => convert?.getUid?.([uin])));
   const uid = converted?.uidInfo instanceof Map ? converted.uidInfo.get(uin) : converted?.uidInfo?.[uin];
   if (typeof uid !== 'string' || !uid) return { uin, name: uin };
-  const result = await withKernelTimeout('读取联系人资料', Promise.resolve().then(() => profile?.getCoreAndBaseInfo?.('nodeStore', [uid])));
+  const result = await withKernelTimeout("读取联系人资料", Promise.resolve().then(() => profile?.getCoreAndBaseInfo?.('nodeStore', [uid])));
   const info = result instanceof Map ? result.get(uid) : result?.[uid];
   return { uin, name: String(info?.coreInfo?.remark || info?.coreInfo?.nick || info?.remark || info?.nick || uin) };
 }
@@ -378,16 +379,16 @@ function activeWrapperPath(): string | undefined {
 export async function sendSso(cmd: string, data: Buffer): Promise<Buffer> {
   getWrapper();
   const hooked = await initNativeHook(wrapperPath);
-  if (!hooked) throw new Error('当前 QQ 内核未能初始化 Windows x64 二进制回包模块');
+  if (!hooked) throw new Error("当前 QQ 内核未能初始化 Windows x64 二进制回包模块");
   return requestSso(cmd, data);
 }
 
 async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
 
   const svc = getMsgService();
-  if (!svc) throw new Error('QQ 内核未就绪');
+  if (!svc) throw new Error("QQ 内核未就绪");
   const fn = svc['sendSsoCmdReqByContend'] as ((c: string, d: Buffer) => Promise<unknown>) | undefined;
-  if (typeof fn !== 'function') throw new Error('内核没有 sendSsoCmdReqByContend');
+  if (typeof fn !== 'function') throw new Error("内核没有 sendSsoCmdReqByContend");
   const started = Date.now();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   // A native SSO call can stay pending forever when the receive hook is
@@ -397,7 +398,7 @@ async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
   try {
     ret = await Promise.race([
       fn.call(svc, cmd, data),
-      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('QQ 请求超时')), 20000); })
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("QQ 请求超时")), 20000); })
     ]);
   } catch (error) {
     log(`SSO 请求未完成：${cmd}，耗时 ${Date.now() - started}ms，异常类型 ${error instanceof Error ? error.name : typeof error}`);
@@ -414,7 +415,7 @@ async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
   const buf = pickBuffer(ret);
   if (!buf?.length) {
     log(`SSO 回包为空：${cmd}，rsp 类型 ${typeof response?.rsp}，耗时 ${Date.now() - started}ms`);
-    throw new Error('QQ 回包为空');
+    throw new Error("QQ 回包为空");
   }
   log(`sendSso 成功：${cmd} 回包 ${buf.length} 字节，耗时 ${Date.now() - started}ms`);
   return buf;
@@ -423,9 +424,9 @@ async function requestSso(cmd: string, data: Buffer): Promise<Buffer> {
 /** 拉群成员列表（走内核 GroupService，不依赖渲染进程的 IPC 通道） */
 export async function getGroupMembers(groupId: string): Promise<Array<{ uin: string; uid: string; name: string }>> {
   const session = getSession();
-  if (!session) throw new Error('QQ 内核 session 未就绪，无法读取群成员');
+  if (!session) throw new Error("QQ 内核 session 未就绪，无法读取群成员");
   const svc = session.getGroupService?.();
-  if (!svc) throw new Error('QQ 内核未提供 GroupService，无法读取群成员');
+  if (!svc) throw new Error("QQ 内核未提供 GroupService，无法读取群成员");
 
   const assertSuccess = (res: any, label: string) => {
     if (!res) throw new Error(`${label}没有返回结果`);
@@ -447,8 +448,8 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ uin: str
   let primaryError: unknown;
   if (typeof svc.getAllMemberList === 'function') {
     try {
-      const all = await withKernelTimeout('读取群成员列表', Promise.resolve().then(() => svc.getAllMemberList(String(groupId), false)));
-      assertSuccess(all, '读取群成员列表');
+      const all = await withKernelTimeout("读取群成员列表", Promise.resolve().then(() => svc.getAllMemberList(String(groupId), false)));
+      assertSuccess(all, "读取群成员列表");
       const allResult = (all as any).result;
       members = asMap(allResult?.infos ?? (all as any).memberList ?? (all as any).memberInfoList);
       incomplete = !members.size || allResult?.finish === false;
@@ -457,22 +458,22 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ uin: str
       log(`[kernel] getAllMemberList 失败，尝试分页兜底：${String(err)}`);
     }
   } else {
-    primaryError = new Error('GroupService 没有 getAllMemberList');
+    primaryError = new Error("GroupService 没有 getAllMemberList");
   }
 
   // 群成员批次的结果为 `{ result: { ids, infos: Map, finish } }`。
   // Use the paginated scene API when the bulk result is missing or incomplete.
   if (incomplete) {
     if (typeof svc.createMemberListScene !== 'function' || typeof svc.getNextMemberList !== 'function') {
-      const fallbackError = new Error('GroupService 未返回完整成员列表，且不支持 getNextMemberList 分页');
+      const fallbackError = new Error("GroupService 未返回完整成员列表，且不支持 getNextMemberList 分页");
       if (primaryError) throw new Error(`${fallbackError.message}；${String(primaryError)}`);
       throw fallbackError;
     }
     let sceneId: string | undefined;
     try {
-      sceneId = await withKernelTimeout('创建群成员分页场景', Promise.resolve().then(() =>
+      sceneId = await withKernelTimeout("创建群成员分页场景", Promise.resolve().then(() =>
         svc.createMemberListScene(String(groupId), 'groupMemberList_MainWindow')));
-      if (!sceneId) throw new Error('创建群成员分页场景失败');
+      if (!sceneId) throw new Error("创建群成员分页场景失败");
 
       const collected = new Map(members);
       let cursor: { index: number; uid: string } | undefined;
@@ -480,19 +481,19 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ uin: str
       let finish = false;
       let pages = 0;
       while (!finish) {
-        if (++pages > 100) throw new Error('群成员分页超过 100 页，已停止读取');
-        const page = await withKernelTimeout('读取群成员分页', Promise.resolve().then(() => svc.getNextMemberList(sceneId, cursor, 1000)));
-        assertSuccess(page, '读取群成员分页');
+        if (++pages > 100) throw new Error("群成员分页超过 100 页，已停止读取");
+        const page = await withKernelTimeout("读取群成员分页", Promise.resolve().then(() => svc.getNextMemberList(sceneId, cursor, 1000)));
+        assertSuccess(page, "读取群成员分页");
         const result = (page as any).result;
-        if (!result) throw new Error('读取群成员分页没有 result');
+        if (!result) throw new Error("读取群成员分页没有 result");
         const pageInfos = asMap(result.infos);
-        if (!pageInfos.size && result.finish !== true) throw new Error('群成员分页没有返回成员，也未标记完成');
+        if (!pageInfos.size && result.finish !== true) throw new Error("群成员分页没有返回成员，也未标记完成");
         for (const [uid, member] of pageInfos) collected.set(uid, member);
         finish = result.finish === true;
         if (!finish) {
           const ids = Array.isArray(result.ids) ? result.ids : [];
           const lastUid = String(ids.at(-1) ?? [...pageInfos.keys()].at(-1) ?? '');
-          if (!lastUid) throw new Error('群成员分页未提供继续读取所需的 uid');
+          if (!lastUid) throw new Error("群成员分页未提供继续读取所需的 uid");
           cursorIndex += ids.length || pageInfos.size;
           cursor = { index: cursorIndex, uid: lastUid };
         }
@@ -523,7 +524,7 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ uin: str
     .filter(uid => uid.length > 0))];
   if (missingUids.length && typeof svc.getUinByUids === 'function') {
     try {
-      const result = await withKernelTimeout('批量解析群成员 QQ 号', Promise.resolve().then(() => svc.getUinByUids(missingUids)));
+      const result = await withKernelTimeout("批量解析群成员 QQ 号", Promise.resolve().then(() => svc.getUinByUids(missingUids)));
       if (result?.errCode !== undefined && Number(result.errCode) !== 0) {
         throw new Error(`errCode=${String(result.errCode)} ${String(result.errMsg ?? '')}`);
       }
@@ -552,7 +553,7 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ uin: str
 /** 发一个 ark 卡片（json 字符串），走内核 sendMsg */
 export async function sendArk(peer: ArkPeer, bytesData: string): Promise<{ ok: boolean; error?: string }> {
   const svc = getMsgService();
-  if (!svc) return { ok: false, error: '拿不到 QQ 内核服务（wrapper.node 加载失败，看日志 [kernel] 那几行）' };
+  if (!svc) return { ok: false, error: "无法连接 QQ 内核服务，请查看调试日志" };
   const elements = [{ elementId: '', elementType: 10, arkElement: { bytesData } }];
   const p = { chatType: Number(peer.chatType) || 1, peerUid: String(peer.peerUid), guildId: '' };
   log(`[kernel] sendMsg peer=${JSON.stringify(p)} ark=${bytesData.length} 字`);
@@ -560,14 +561,14 @@ export async function sendArk(peer: ArkPeer, bytesData: string): Promise<{ ok: b
   try {
     const ret = await Promise.race([
       svc.sendMsg('0', p, elements, new Map()),
-      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('发送卡片超时（20 秒）')), 20000); })
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("发送卡片超时（20 秒）")), 20000); })
     ]);
     if (ret === undefined || ret === null) {
-      return { ok: false, error: '内核发送卡片未返回结果' };
+      return { ok: false, error: "内核发送卡片未返回结果" };
     }
     const code = Number(ret?.result ?? ret?.errCode ?? 0);
     if (code === 0) {
-      log('[kernel] sendMsg 成功');
+      log("[kernel] sendMsg 成功");
       return { ok: true };
     }
     log(`[kernel] sendMsg 返回：${JSON.stringify(ret).slice(0, 300)}`);

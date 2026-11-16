@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n';
+import { isOperationCancelled, OPERATION_CANCELLED } from '../shared/decrypt-errors';
 /**
  * 主进程侧的 GnuPG 封装。
  * 只用 `gpg` 命令行（Windows 下探测常见安装路径），不依赖任何第三方库。
@@ -92,7 +94,7 @@ export class Gpg {
   private async resolveExecutable(): Promise<void> {
     if (this.resolved) return;
     const status = await this.detect();
-    if (!status.ok) throw new Error(status.error || '没有找到可用的 gpg');
+    if (!status.ok) throw new Error(status.error || "没有找到可用的 gpg");
   }
 
   /** 探测 gpg：手动路径 > PATH > 常见安装路径 */
@@ -128,7 +130,7 @@ export class Gpg {
       ok: false,
       path: '',
       version: '',
-      home: this.home || '(默认)',
+      home: this.home || "(默认)",
       error: `没有找到可用的 gpg。已尝试：\n${tried.join('\n')}`
     };
   }
@@ -159,14 +161,14 @@ export class Gpg {
         ok: true,
         path: exe,
         version: first.trim(),
-        home: this.home || '(默认)'
+        home: this.home || "(默认)"
       };
     }
     return {
       ok: false,
       path: exe,
       version: '',
-      home: this.home || '(默认)',
+      home: this.home || "(默认)",
       error: (res.stderr || res.error || '').trim()
     };
   }
@@ -220,13 +222,13 @@ export class Gpg {
 
   /** 加密 */
   async encrypt(plaintext: string, recipients: string[], signKeyID = ''): Promise<string> {
-    if (recipients.length === 0) throw new Error('没有指定收件人公钥');
+    if (recipients.length === 0) throw new Error("没有指定收件人公钥");
     if (!signKeyID) {
       const { secret } = await this.listKeys();
       const signer = secret.find(key => !key.expired && !key.revoked);
       signKeyID = signer?.fingerprint || signer?.keyID || '';
     }
-    if (!signKeyID) throw new Error('发送必须签名：没有可用的签名私钥，请导入自己的私钥或插入硬件密钥');
+    if (!signKeyID) throw new Error("发送必须签名：没有可用的签名私钥，请导入自己的私钥或插入硬件密钥");
     const args = ['--armor', '--trust-model', 'always', '--encrypt'];
     // Always encrypt a copy to the signing identity, regardless of UI recipient toggles.
     for (const r of new Set([...recipients, signKeyID])) args.push('--recipient', r);
@@ -241,7 +243,7 @@ export class Gpg {
   /** 解密（同时解析签名状态） */
   decrypt(armored: string, resume = false, preferredKeyID = ''): Promise<DecryptResult> {
     if ((armored.match(/-----BEGIN PGP MESSAGE-----/g) ?? []).length !== 1) {
-      return Promise.reject(new Error('请逐条解密完整的 PGP 消息，不能把多条密文合并解密'));
+      return Promise.reject(new Error("请逐条解密完整的 PGP 消息，不能把多条密文合并解密"));
     }
     return decryptQueue.enqueue(JSON.stringify([this.accountScope, this.exePath, this.home, armored, preferredKeyID]), () => this.decryptNow(armored, preferredKeyID), resume);
   }
@@ -260,12 +262,13 @@ export class Gpg {
     if (res.timedOut || integrityFailed || (res.code !== 0 && !decrypted)) {
       const err = (res.stderr || res.error || '').trim();
       log(`解密失败详情：${err}`);
-      if (res.timedOut) throw new Error('等待硬件密钥超时，本条解密已停止；准备好密钥后可重新尝试');
-      if (/card|CARDCTRL|SC_OP_FAILURE|scdaemon/i.test(err)) throw new Error('硬件密钥未就绪或操作已取消。请插入密钥后手动重试');
-      if (/cancel|timeout|timed out|SIGTERM|killed/i.test(err)) throw new Error('解密已取消或等待超时，请准备好密钥后手动重试');
-      if (/No secret key/i.test(err)) throw new Error('本机没有对应的私钥，无法解密');
-      if (/passphrase|PIN|pinentry/i.test(err)) throw new Error('私钥需要口令，请在 GnuPG（Kleopatra）里解锁后重试');
-      throw new Error('解密失败：密文不完整、格式无效或密钥不可用');
+      if (res.timedOut) throw new Error("等待硬件密钥超时，本条解密已停止；准备好密钥后可重新尝试");
+      if (isOperationCancelled(err)) throw new Error(`${OPERATION_CANCELLED} ${t('error.operationCancelled')}`);
+      if (/card|CARDCTRL|SC_OP_FAILURE|scdaemon/i.test(err)) throw new Error("硬件密钥未就绪或操作已取消。请插入密钥后手动重试");
+      if (/cancel|timeout|timed out|SIGTERM|killed/i.test(err)) throw new Error("解密已取消或等待超时，请准备好密钥后手动重试");
+      if (/No secret key/i.test(err)) throw new Error("本机没有对应的私钥，无法解密");
+      if (/passphrase|PIN|pinentry/i.test(err)) throw new Error("私钥需要口令，请在 GnuPG（Kleopatra）里解锁后重试");
+      throw new Error("解密失败：密文不完整、格式无效或密钥不可用");
     }
     return { plaintext: res.stdout, signature: parseSignature(res.stderr) };
   }
@@ -291,7 +294,7 @@ export class Gpg {
     if (colon.length) return colon;
     const results = parseSearchResult(text, 'keyserver');
     if (!results.length && res.code !== 0 && !/not found|no data/i.test(text)) {
-      throw new Error((res.stderr || res.error || '密钥服务器请求失败').trim());
+      throw new Error((res.stderr || res.error || "密钥服务器请求失败").trim());
     }
     return results;
   }

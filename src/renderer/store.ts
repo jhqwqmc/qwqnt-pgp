@@ -22,6 +22,7 @@ function vueInstancesOf(el: Element | null): AnyObj[] {
 let cachedAioStore: AnyObj | null = null;
 let cachedAioHost: HTMLElement | null = null;
 let cachedAioSource: 'vue' | 'pinia' | 'legacy' | null = null;
+let cachedTreeComponent: AnyObj | null = null;
 let knownAioHosts: HTMLElement[] | null = null;
 let selfCache: SelfInfo | null = null;
 let storeAccountEpoch = 0;
@@ -60,7 +61,7 @@ export function setupVueTracker(): void {
     });
     observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'] });
   }
-  log('vue 组件跟踪已挂上');
+  log("vue 组件跟踪已挂上");
 }
 
 function storeOnComponent(component: AnyObj): AnyObj | null {
@@ -90,6 +91,33 @@ function storeFromEditor(host: HTMLElement, editor: Element): AnyObj | null {
   return null;
 }
 
+function findChatTreeStore(host: HTMLElement, app: AnyObj | undefined): AnyObj | null {
+  if (!/^#\/(?:main\/message|chat)(?:[/?]|$)/.test(location.hash)) return null;
+  const root = app?.['_instance']?.['vnode'] ?? app?.['_container']?.['_vnode'];
+  const pending = [root];
+  const visited = new Set<object>();
+  while (pending.length && visited.size < 1_200) {
+    const vnode = pending.pop();
+    if (!vnode || typeof vnode !== 'object' || visited.has(vnode)) continue;
+    visited.add(vnode);
+    const component = vnode['component'];
+    const element = component?.['subTree']?.['el'] ?? vnode['el'];
+    if (element instanceof Element && !host.contains(element) && !element.contains(host)) continue;
+    if (component && element instanceof Element && (element === host || host.contains(element))) {
+      const store = storeOnComponent(component);
+      if (store && getPeerFromAio(store['curAioData'])) {
+        cachedTreeComponent = component;
+        return cacheStore(store, host, 'vue', 'visible chat Vue tree');
+      }
+    }
+    if (component?.['subTree']) pending.push(component['subTree']);
+    if (Array.isArray(vnode['children'])) {
+      for (const child of vnode['children']) pending.push(child);
+    }
+  }
+  return null;
+}
+
 /** 拿 QQ 的 aioStore（里面有 curAioData） */
 export function getAioStore(editor?: Element): AnyObj | null {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
@@ -114,11 +142,10 @@ export function getAioStore(editor?: Element): AnyObj | null {
     const store = storeOnComponent(inst);
     if (store) return cacheStore(store, host, 'vue', 'visible AIO Vue instance');
   }
-  if (editor) {
-    const store = storeFromEditor(host, editor);
-    if (store) return store;
-    if (hosts.some(candidate => candidate !== host && !host.contains(candidate))) return null;
-  }
+  const anchor = editor ?? host.querySelector('[data-exeditor-root], .chat-msg-area') ?? host;
+  const componentStore = storeFromEditor(host, anchor);
+  if (componentStore) return componentStore;
+  if (editor && hosts.some(candidate => candidate !== host && !host.contains(candidate))) return null;
 
   // QQ also exposes this exact Pinia store in some builds. Never scan unrelated
   // stores by shape: that can silently pick a background or stale conversation.
@@ -136,7 +163,10 @@ export function getAioStore(editor?: Element): AnyObj | null {
   const legacyStore = globals?.['$store']?.['state']?.['common_Aio'];
   if (isAioStore(legacyStore)) return cacheStore(legacyStore, host, 'legacy', 'legacy named common_Aio store');
 
-  log('没找到 aioStore（__VUE__ / pinia / window.app 都没有）');
+  const treeStore = findChatTreeStore(host, vueApp);
+  if (treeStore) return treeStore;
+
+  log("没找到 aioStore（__VUE__ / pinia / window.app 都没有）");
   dumpDom();
   return null;
 }
@@ -159,7 +189,12 @@ function selectCurrentChatHosts(hosts: HTMLElement[]): HTMLElement[] {
   const active = document.activeElement?.closest<HTMLElement>('.aio.vue-component, .aio');
   if (active && hosts.includes(active)) return [active];
   const marked = hosts.filter(host => host.matches('.is-active, .active, [aria-current="true"], [data-current="true"]'));
-  return marked.length === 1 ? marked : [];
+  if (marked.length === 1) return marked;
+  if (/^#\/main\/message(?:[/?]|$)/.test(location.hash)) {
+    const primary = hosts.filter(host => host.closest('.message-panel'));
+    if (primary.length === 1) return primary;
+  }
+  return [];
 }
 
 function isAioStore(value: unknown): value is AnyObj {
@@ -176,6 +211,7 @@ function cacheStore(store: AnyObj, host: HTMLElement, source: 'vue' | 'pinia' | 
 
 function currentHostStore(host: HTMLElement, source: typeof cachedAioSource): AnyObj | null {
   if (source === 'vue') {
+    if (cachedTreeComponent && !cachedTreeComponent['isUnmounted']) return storeOnComponent(cachedTreeComponent);
     for (const inst of vueInstancesOf(host)) {
       const store = storeOnComponent(inst);
       if (store) return store;
@@ -202,6 +238,7 @@ function clearAioStoreCache(clearHosts = false): void {
   cachedAioStore = null;
   cachedAioHost = null;
   cachedAioSource = null;
+  cachedTreeComponent = null;
   if (clearHosts) knownAioHosts = null;
 }
 
@@ -324,13 +361,16 @@ export async function resolvePeerUin(uid: string): Promise<string> {
 
 /** Current peer is derived only from the live, visible AIO store. */
 export function getCurrentPeer(editor?: Element): PeerTarget | null {
-  const aio = getCurAio(editor);
-  if (!aio) return null;
+  return getPeerFromAio(getCurAio(editor));
+}
+
+function getPeerFromAio(value: AnyObj | null | undefined): PeerTarget | null {
+  const aio = value?.['__v_isRef'] === true ? value['value'] as AnyObj | undefined : value;
+  if (!aio || typeof aio !== 'object') return null;
   const header = (aio['header'] as AnyObj | undefined) ?? {};
   const chatType = Number(aio['chatType'] ?? header['chatType']);
   const peerUid = firstString(header['uid'], aio['peerUid']);
   if (!Number.isInteger(chatType) || chatType <= 0 || !peerUid) {
-    log(`curAioData 里没有有效会话目标，header=${JSON.stringify(header).slice(0, 300)}`);
     return null;
   }
   const uin = firstString(header['uin']);
@@ -376,7 +416,7 @@ function firstString(...vals: unknown[]): string | undefined {
 export function dumpAioOnce(): void {
   const aio = getCurAio();
   if (!aio) {
-    log('curAioData 为空');
+    log("curAioData 为空");
     return;
   }
   const brief: Record<string, string> = {};

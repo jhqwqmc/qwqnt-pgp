@@ -19,7 +19,7 @@ const rendererGlobal = window as unknown as Record<symbol, boolean | undefined>;
 async function bootstrap(): Promise<void> {
   if (rendererGlobal[rendererKey]) return;
   rendererGlobal[rendererKey] = true;
-  void initRendererLog().then(() => log('renderer 启动'));
+  void initRendererLog().then(() => log("renderer 启动"));
   watchSettings();
   setAutoDecrypt(false);
   window.addEventListener('qwqnt-pgp:account-changed', () => {
@@ -36,7 +36,7 @@ async function bootstrap(): Promise<void> {
   // Vue 组件追踪（peer / selfInfo 的来源之一）
   setupVueTracker();
   const warmLists = (): void => {
-    if (!location.hash.startsWith('#/main/message')) return;
+    if (!/^#\/(?:main\/message|chat)(?:[/?]|$)/.test(location.hash)) return;
     void loadAccountContext().then(context => {
       if (context) void Promise.allSettled([readFriends(context.accountId), readKeys(context.accountId), window.QwQNTPgp.bindingList()]);
     }).catch(err => log(`预加载联系人失败：${String(err)}`));

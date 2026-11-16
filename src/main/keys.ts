@@ -34,10 +34,10 @@ async function fetchText(url: string, timeout = 15000): Promise<string> {
 /** 查询某个 GitHub 用户公开的 GPG 公钥 */
 export async function searchGithub(username: string): Promise<KeySearchResult[]> {
   const name = username.trim().replace(/^@/, '');
-  if (!name) throw new Error('请输入 GitHub 用户名');
+  if (!name) throw new Error("请输入 GitHub 用户名");
   const text = await fetchText(`${GITHUB_API}/users/${encodeURIComponent(name)}/gpg_keys`);
   const list = JSON.parse(text) as GithubGpgKey[];
-  if (!Array.isArray(list)) throw new Error('GitHub 返回格式无效');
+  if (!Array.isArray(list)) throw new Error("GitHub 返回格式无效");
   return list.map(item => ({
     keyID: item.key_id,
     fingerprint: item.key_id,
@@ -45,7 +45,7 @@ export async function searchGithub(username: string): Promise<KeySearchResult[]>
     bits: 0,
     created: 0,
     expires: 0,
-    userIds: (item.emails ?? []).map(e => `${e.email}${e.verified ? '（已验证）' : ''}`),
+    userIds: (item.emails ?? []).map(e => `${e.email}${e.verified ? "（已验证）" : ''}`),
     source: 'github' as const,
     armored: item.raw_key ?? undefined
   }));

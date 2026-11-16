@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n';
+import { DECRYPT_COOLDOWN, DECRYPT_SKIPPED } from '../shared/decrypt-errors';
 /** Message-side silent PGP decryption for QQ's native chat bubbles. */
 import { log } from './log';
 import { isDirectChat } from '../shared/chat-type';
@@ -178,7 +180,7 @@ export function startMessageWatcher(): void {
   window.setTimeout(pollAttach, 2000);
   needFullScan = true;
   scheduleScan();
-  log('消息监听已启动');
+  log("消息监听已启动");
 }
 
 function scanHydrationCandidates(): void {
@@ -425,11 +427,11 @@ function messageCiphertexts(owner: Element, record: ResolvedMessageRecord | null
   ];
   let best: string[] = [];
   for (const candidate of candidates) {
-    const body = candidate.trimStart();
-    if (!body.startsWith(ARMOR_BEGIN)) continue;
+    const body = candidate.trim();
+    if (!body.startsWith(ARMOR_BEGIN) || !body.endsWith(ARMOR_END)) continue;
     const blocks = collectCiphertexts(body);
     const remainder = body.replace(/-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/g, '');
-    if (remainder.includes(ARMOR_BEGIN)) continue;
+    if (remainder.trim()) continue;
     if (blocks.length > best.length) best = blocks;
   }
   return best;
@@ -519,12 +521,12 @@ function retryOwnerAfterStaleSnapshot(owner: Element, key: string): void {
 
 function isQueuedDecryptSkip(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /\[PGP_DECRYPT_(?:SKIPPED|COOLDOWN)\]/.test(message);
+  return message.includes(DECRYPT_SKIPPED) || message.includes(DECRYPT_COOLDOWN);
 }
 
 function isCooldownError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return message.includes('[PGP_DECRYPT_COOLDOWN]');
+  return message.includes(DECRYPT_COOLDOWN);
 }
 
 function needsNativeRecord(owner: Element, snapshot: MessageSnapshot): boolean {
@@ -580,11 +582,11 @@ async function decryptForward(owner: Element, resid: string, record: ResolvedMes
     } catch (error) {
       // Never start a second hardware operation after a missing key or cancelled PIN request.
       if (/硬件|密钥|队列|口令|PIN|取消|超时/.test(String(error))) throw error;
-      log('转发外显解密未成功，尝试读取完整正文');
+      log("转发外显解密未成功，尝试读取完整正文");
     }
   }
   const effectiveResid = resid || findForwardCardIdentity(owner, record)?.resid || '';
-  if (!effectiveResid) throw new Error('forward preview incomplete and no record ID is available');
+  if (!effectiveResid) throw new Error("转发预览不完整，且缺少聊天记录 ID");
   const ciphertexts = await fetchForwardBlocks(effectiveResid);
   return Promise.all(ciphertexts.map(block => doDecrypt(block, resume)));
 }
@@ -617,7 +619,7 @@ function inspectForwardPreview(owner: Element, record: ResolvedMessageRecord | n
         log(`转发外显完整：${candidate.length}字符，${blocks.length}个PGP块，先尝试外显解密`);
         return blocks;
       }
-      log('转发外显不完整或无法确认完整性，改为拉取完整转发正文');
+      log("转发外显不完整或无法确认完整性，改为拉取完整转发正文");
     } catch { /* Malformed or unrelated Ark elements cannot supply a complete preview. */ }
   }
   return [];
@@ -625,15 +627,15 @@ function inspectForwardPreview(owner: Element, record: ResolvedMessageRecord | n
 
 async function fetchForwardBlocks(resid: string): Promise<string[]> {
   const self = await getSelfInfo();
-  if (!self?.uid) throw new Error('self uid unavailable');
+  if (!self?.uid) throw new Error("无法取得当前账号 UID");
   const messages = await window.QwQNTPgp.recvForward(self.uid, resid);
   const joined = messages.join('').trimStart();
-  if (!joined.startsWith(ARMOR_BEGIN)) throw new Error('forwarded content does not start with a PGP message');
+  if (!joined.startsWith(ARMOR_BEGIN)) throw new Error("转发内容没有以 PGP 消息开头");
   const blocks = collectCiphertexts(joined);
-  if (!blocks.length) throw new Error('no complete PGP message in forwarded content');
+  if (!blocks.length) throw new Error("转发内容没有完整的 PGP 消息");
   if (joined.replace(/-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/g, '').trim()) {
     // Preserve mixed forwarding cards; their individual messages are handled in the viewer.
-    throw new Error('mixed forwarded content must be decrypted per message in its viewer');
+    throw new Error("请打开聊天记录，逐条解密其中的消息");
   }
   return blocks;
 }
@@ -744,15 +746,15 @@ function insertDecryptedTail(owner: Element, plain: HTMLElement, signature: Sign
   const status = signature.status;
   const trusted = status === 'good' && signature.trust === 'full';
   const title = {
-    good: trusted ? '签名验证通过，签名者受本机信任' : '签名有效，但本机未确认签名者信任',
-    none: '无签名', bad: '签名验证失败',
-    error: '签名校验出错', nokey: '缺少签名者公钥，无法验签'
+    good: trusted ? t("message.trustedSignature") : t("message.untrustedSignature"),
+    none: t("message.noSignature"), bad: t("message.invalidSignature"),
+    error: t("message.signatureCheckError"), nokey: t("message.signerKeyMissing")
   }[status];
   const create = (): HTMLSpanElement => {
     const tag = document.createElement('span');
     tag.className = 'qwqnt-pgp-signature-tail';
     tag.dataset.status = status;
-    tag.textContent = '已解密';
+    tag.textContent = t("message.decrypted");
     tag.title = title;
     tag.style.cssText = `font-size:12px;line-height:1.2;white-space:nowrap;user-select:none;margin-left:6px;color:${trusted ? '#238636' : status === 'none' || status === 'good' ? '#b77900' : '#d1242f'}`;
     return tag;
@@ -876,14 +878,14 @@ export function manualDecrypt(element: Element): Promise<void> {
     const visibleForward = findForwardCardIdentity(owner, visibleRecord);
     const headerCandidate = canManuallyDecrypt(owner);
     if (!headerCandidate && !visibleForward && !needsNativeRecord(owner, snapshot)) {
-      throw new Error('此消息没有可识别的 PGP 密文');
+      throw new Error("此消息没有可识别的 PGP 密文");
     }
     const record = await resolveRecordForOwner(owner, snapshot);
-    if (epoch !== accountEpoch) throw new Error('账号已切换，解密请求已取消');
-    if (!snapshotStillCurrent(owner, snapshot)) throw new Error('消息内容已变化，请重新选择');
+    if (epoch !== accountEpoch) throw new Error("账号已切换，解密请求已取消");
+    if (!snapshotStillCurrent(owner, snapshot)) throw new Error("消息内容已变化，请重新选择");
     const forward = findForwardCardIdentity(owner, record);
     const blocks = forward ? [] : messageCiphertexts(owner, record);
-    if (!forward && !blocks.length) throw new Error('密文不完整，无法解密');
+    if (!forward && !blocks.length) throw new Error("密文不完整，无法解密");
     attemptedOwners.set(owner, snapshot.key);
     for (const block of blocks) {
       const key = decryptCacheKey(block);
@@ -891,8 +893,8 @@ export function manualDecrypt(element: Element): Promise<void> {
     }
     const results = forward ? await decryptForward(owner, forward.resid ?? '', record, true)
       : await Promise.all(blocks.map(block => doDecrypt(block, true)));
-    if (epoch !== accountEpoch) throw new Error('账号已切换，解密结果已丢弃');
-    if (!snapshotStillCurrent(owner, snapshot)) throw new Error('消息内容已变化，解密结果未应用');
+    if (epoch !== accountEpoch) throw new Error("账号已切换，解密结果已丢弃");
+    if (!snapshotStillCurrent(owner, snapshot)) throw new Error("消息内容已变化，解密结果未应用");
     replaceNativeContent(owner, results, snapshot.msgId, record);
     failedDecryptOwners.delete(owner);
   })().catch(error => {
@@ -939,6 +941,8 @@ function setDecryptCache(key: string, value: CacheValue): boolean {
   return decryptCache.get(key) === value;
 }
 
+export class PgpDecryptionFailure extends Error {}
+
 function doDecrypt(ciphertext: string, resume: boolean): Promise<DecryptResult> {
   const epoch = accountEpoch;
   const cacheKey = decryptCacheKey(ciphertext);
@@ -951,9 +955,13 @@ function doDecrypt(ciphertext: string, resume: boolean): Promise<DecryptResult> 
   if (cached && !isCachedFailure(cached)) return Promise.resolve(cached);
 
   const pending = window.QwQNTPgp.decrypt(ciphertext, resume).then(result => {
-    if (epoch !== accountEpoch) throw new Error('账号已切换，丢弃旧解密结果');
+    if (epoch !== accountEpoch) throw new Error("账号已切换，丢弃旧解密结果");
     if (decryptCache.get(cacheKey) === pending) setDecryptCache(cacheKey, result);
     return result;
+  }, (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isQueuedDecryptSkip(error)) throw error;
+    throw new PgpDecryptionFailure(message, { cause: error });
   }).catch((error: unknown) => {
     if (epoch !== accountEpoch) throw error;
     const failure = error instanceof Error ? error : new Error(String(error));

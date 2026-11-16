@@ -48,6 +48,7 @@ const api = {
 
   detectGpg: () => invoke<GpgStatus>('detect-gpg'),
   listKeys: (force = false) => invoke<{ secret: KeyInfo[]; public: KeyInfo[] }>('list-keys', force),
+  cachedKeys: () => invoke<{ secret: KeyInfo[]; public: KeyInfo[] } | undefined>('cached-keys'),
   importKey: (armored: string) => invoke<{ keyIDs: string[] }>('import-key', armored),
   recvKey: (keyID: string, server?: string) => invoke<string>('recv-key', keyID, server),
   searchKeyserver: (query: string, server?: string) => invoke<KeySearchResult[]>('search-keyserver', query, server),

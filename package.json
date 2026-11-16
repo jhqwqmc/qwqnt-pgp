@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/qwqnt-community/types/main/plugin.schema.json",
   "name": "qwqnt-pgp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "QwQNT 的 PGP 加密插件：基于 GnuPG 的端到端加密，支持合并转发发送、密钥与联系人管理",
   "type": "module",
   "scripts": {
@@ -17,12 +17,13 @@
   "license": "MIT",
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",
+    "@electron/asar": "^4.3.2",
     "@qwqnt/types": "github:qwqnt-community/types",
     "@types/node": "^26.2.0",
     "electron": "^43.4.1",
+    "jszip": "3.10.2",
     "oxlint": "^1.79.0",
     "oxlint-tsgolint": "^7.0.2001",
-    "jszip": "3.10.2",
     "vite": "^8.2.2"
   },
   "packageManager": "pnpm@11.23.0",

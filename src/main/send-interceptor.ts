@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 import { buildCiphertextCard } from '../shared/forward-card';
 import { isDirectChat } from '../shared/chat-type';
 import { encodeFaceParts, facePart, type FacePart } from '../shared/qq-face';
@@ -65,7 +66,7 @@ export function installAutoSendInterceptor(
   if (!interceptor || typeof interceptor.interceptIpcReceiveEvents !== 'function') {
     return {
       available: false,
-      reason: '未加载 qwqnt-ipc-interceptor，自动加密发送不可用',
+      reason: "未加载 qwqnt-ipc-interceptor，自动加密发送不可用",
       dispose() {},
       async waitForIdle() {}
     };
@@ -99,14 +100,14 @@ export function installAutoSendInterceptor(
       context = deps.captureAccount(raw[0], rawChannel);
       if (!context) {
         if (isPlaintextSend) {
-          try { deps.replyFailure(raw[0], rawChannel, rawMeta, '当前QQ账号身份未确认，已阻止文本发送'); } catch { /* block regardless of ack support */ }
+          try { deps.replyFailure(raw[0], rawChannel, rawMeta, "当前QQ账号身份未确认，已阻止文本发送"); } catch { /* block regardless of ack support */ }
           return { action: 'block' };
         }
         return;
       }
       if (!args) {
         if (deps.getConfig(context.accountId).sendPolicy !== 'auto') return;
-        fail(raw[0], rawChannel, rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext, error: '无法解析 QQ sendMsg IPC，请求已阻止' }, deps);
+        fail(raw[0], rawChannel, rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext, error: "无法解析 QQ sendMsg IPC，请求已阻止" }, deps);
         return { action: 'block' };
       }
       const envelope = args[3];
@@ -122,13 +123,13 @@ export function installAutoSendInterceptor(
       msgId = String(msgPayload?.msgId ?? '');
       const elements = msgPayload?.msgElements;
       if (!Array.isArray(elements)) {
-        fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: '无法识别 QQ 文本消息元素，已阻止自动发送' }, deps);
+        fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: "无法识别 QQ 文本消息元素，已阻止自动发送" }, deps);
         return { action: 'block' };
       }
       if (!elements.length || !elements.every(isTextOrFace)) return;
       const text = extractPlaintext(elements);
       if (text === null) {
-        fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: 'QQ 文本元素格式无效，已阻止自动发送' }, deps);
+        fail(args[0], args[2], rawMeta, { accountId: context.accountId, peerUid, msgId, plaintext: '', error: "QQ 文本元素格式无效，已阻止自动发送" }, deps);
         return { action: 'block' };
       }
       if (isAlreadyEncrypted(text)) return;
@@ -140,14 +141,14 @@ export function installAutoSendInterceptor(
       const callbackKey = `${channel}\u0000${callbackId}`;
       const bytes = Buffer.byteLength(text, 'utf8');
       if (!callbackId) {
-        fail(args[0], channel, meta, { accountId: context.accountId, peerUid, msgId, plaintext: text, error: '缺失 QQ 发送回调标识，已阻止发送' }, deps);
+        fail(args[0], channel, meta, { accountId: context.accountId, peerUid, msgId, plaintext: text, error: "缺失 QQ 发送回调标识，已阻止发送" }, deps);
         return { action: 'block' };
       }
       // A duplicate envelope with the same callback ID is blocked; the first
       // in-flight request owns the eventual callback response.
       if (pendingCallbacks.has(callbackKey)) return { action: 'block' };
       if (pending.size >= 64 || pendingBytes + bytes > 8 * 1024 * 1024) {
-        fail(args[0], channel, meta, { accountId: context.accountId, peerUid, msgId, plaintext: text, error: '自动加密发送队列已满，请稍后重试' }, deps);
+        fail(args[0], channel, meta, { accountId: context.accountId, peerUid, msgId, plaintext: text, error: "自动加密发送队列已满，请稍后重试" }, deps);
         return { action: 'block' };
       }
       pendingCallbacks.add(callbackKey);
@@ -195,7 +196,7 @@ export function installAutoSendInterceptor(
     try {
       const accountId = context.accountId;
       const ensureCurrent = () => {
-        if (!deps.isCurrent(args[0], context)) throw new Error('QQ账号已切换，已取消旧账号发送');
+        if (!deps.isCurrent(args[0], context)) throw new Error("QQ账号已切换，已取消旧账号发送");
         deps.assertNativeAccount(context);
       };
       // Re-read policy after the async boundary; policy changes to non-auto
@@ -207,12 +208,12 @@ export function installAutoSendInterceptor(
         return;
       }
       const peer = normalizePeer(msgPayload?.peer);
-      if (!peer) throw new Error('QQ sendMsg 请求缺少有效会话信息');
+      if (!peer) throw new Error("QQ sendMsg 请求缺少有效会话信息");
       let otherBindings: KeyBinding[] = [];
       let groupId = 0;
       if (isDirectChat(peer.chatType)) {
         const peerUin = numericUin(peer.peerUid) ? peer.peerUid : await deps.resolveUin(peer.peerUid);
-        if (!numericUin(peerUin)) throw new Error('无法解析私聊对象数字 QQ 号，已阻止明文发送');
+        if (!numericUin(peerUin)) throw new Error("无法解析私聊对象数字 QQ 号，已阻止明文发送");
         const { binding, enabled } = await deps.getDirectBinding(accountId, peerUin);
         if (!enabled || !binding) {
           ensureCurrent();
@@ -221,9 +222,9 @@ export function installAutoSendInterceptor(
         }
         otherBindings = [binding];
       } else if (peer.chatType === 2) {
-        if (!numericUin(peer.peerUid)) throw new Error('群号不是有效数字，已阻止明文发送');
+        if (!numericUin(peer.peerUid)) throw new Error("群号不是有效数字，已阻止明文发送");
         groupId = Number(peer.peerUid);
-        if (!Number.isSafeInteger(groupId) || groupId <= 0) throw new Error('群号超出协议范围，已阻止明文发送');
+        if (!Number.isSafeInteger(groupId) || groupId <= 0) throw new Error("群号超出协议范围，已阻止明文发送");
         const group = await deps.getGroupConfig(accountId, peer.peerUid);
         if (!group.targets.length) {
           ensureCurrent();
@@ -232,9 +233,9 @@ export function installAutoSendInterceptor(
         }
         const self = await deps.getSelfInfo(accountId, context.selfUid);
         const selfUin = self && numericUin(self.uin) ? self.uin : '';
-        if (!selfUin) throw new Error('无法确认本机数字 QQ 号，已阻止群聊明文发送');
+        if (!selfUin) throw new Error("无法确认本机数字 QQ 号，已阻止群聊明文发送");
         const invalidTargets = group.targets.filter(uin => !numericUin(uin));
-        if (invalidTargets.length) throw new Error('群聊成员设置含无效 UID/QQ 号，已阻止明文发送');
+        if (invalidTargets.length) throw new Error("群聊成员设置含无效 UID/QQ 号，已阻止明文发送");
         const otherUins = [...new Set(group.targets.filter(uin => uin !== selfUin))];
         if (!otherUins.length) {
           ensureCurrent();
@@ -244,7 +245,7 @@ export function installAutoSendInterceptor(
         otherBindings = await deps.getKeyBindings(accountId, otherUins);
         const missing = otherUins.filter(uin => !otherBindings.some(binding => binding.uin === uin));
         if (missing.length) throw new Error(`群聊已选成员缺少公钥绑定：${missing.join('、')}，已阻止明文发送`);
-        if (!otherBindings.length) throw new Error('群聊已启用加密成员，但没有有效公钥绑定，已阻止明文发送');
+        if (!otherBindings.length) throw new Error("群聊已启用加密成员，但没有有效公钥绑定，已阻止明文发送");
       } else {
         ensureCurrent();
         replayEnvelope(args, cloneEnvelope(originalEnvelope), permitted, deps);
@@ -253,16 +254,16 @@ export function installAutoSendInterceptor(
 
       ensureCurrent();
       const ownKeyID = await deps.getOwnKeyID(accountId);
-      if (!ownKeyID) throw new Error('没有可用的本机签名私钥，已阻止明文发送');
+      if (!ownKeyID) throw new Error("没有可用的本机签名私钥，已阻止明文发送");
       const keyIDs = [...new Set(otherBindings.map(binding => binding.keyID).filter(keyID => typeof keyID === 'string' && keyID.trim()))];
-      if (!keyIDs.length) throw new Error('没有已绑定的收件人公钥，已阻止明文发送');
+      if (!keyIDs.length) throw new Error("没有已绑定的收件人公钥，已阻止明文发送");
       const armored = await deps.encrypt(accountId, plaintext, [...new Set([ownKeyID, ...keyIDs])]);
       if (!armored || !armored.includes(PGP_HEADER) || !armored.includes(PGP_FOOTER)) {
-        throw new Error('加密未返回完整 PGP 密文，已阻止明文发送');
+        throw new Error("加密未返回完整 PGP 密文，已阻止明文发送");
       }
       ensureCurrent();
       const self = await deps.getSelfInfo(accountId, context.selfUid);
-      if (!self?.uid || !numericUin(self.uin)) throw new Error('无法读取本机账号信息，已阻止明文发送');
+      if (!self?.uid || !numericUin(self.uin)) throw new Error("无法读取本机账号信息，已阻止明文发送");
       const now = Math.floor(Date.now() / 1000);
       const nodes = [{
         uin: '0',
@@ -273,7 +274,7 @@ export function installAutoSendInterceptor(
       }];
       const uploaded = await deps.uploadForward({ selfUid: self.uid, nodes, groupId });
       ensureCurrent();
-      if (!uploaded?.resId) throw new Error('服务器没有返回转发记录 ID，已阻止明文发送');
+      if (!uploaded?.resId) throw new Error("服务器没有返回转发记录 ID，已阻止明文发送");
       const card = buildCiphertextCard(1, uploaded.resId, randomUUID());
       const arkElement = { elementId: '', elementType: 10, arkElement: { bytesData: card } };
       const cloned = cloneEnvelope(originalEnvelope);
@@ -309,12 +310,12 @@ function replayEnvelope(
   }
   if (permitted.has(envelope)) {
     permitted.delete(envelope);
-    throw new Error('QQ sendMsg 回放没有经过一次性许可拦截器');
+    throw new Error("QQ sendMsg 回放没有经过一次性许可拦截器");
   }
 }
 
 function fail(event: unknown, channel: string, meta: AnyObj, failure: AutoSendFailure, deps: SendInterceptorDeps): void {
-  try { deps.replyFailure(event, channel, meta, failure.error); }
+  try { deps.replyFailure(event, channel, meta, t('compose.sendFailed')); }
   catch { /* always attempt the scoped UI recovery event below */ }
   try { deps.notifyFailure(event, channel, failure); } catch { /* ignore destroyed renderer */ }
 }
@@ -325,10 +326,10 @@ function normalizeReceiveArgs(raw: any[]): [unknown, unknown, string, unknown[]]
 }
 
 function cloneEnvelope(envelope: unknown[]): unknown[] {
-  if (envelope.length < 2 || !isObject(envelope[1])) throw new Error('sendMsg IPC envelope 格式无效');
+  if (envelope.length < 2 || !isObject(envelope[1])) throw new Error("sendMsg IPC envelope 格式无效");
   const request = envelope[1] as AnyObj;
   const payload = Array.isArray(request.payload) ? [...request.payload] : null;
-  if (!payload || !isObject(payload[0])) throw new Error('sendMsg payload 格式无效');
+  if (!payload || !isObject(payload[0])) throw new Error("sendMsg payload 格式无效");
   return [envelope[0], { ...request, payload }];
 }
 

@@ -1,9 +1,11 @@
+import { escapeHtml, getLocale, supportedLocales, t, tHtml } from '../shared/i18n';
 /** 通过框架的设置扩展注册「PGP 加密」页。 */
 import { log } from './log';
 import { toast } from './toast';
 import { getActiveAccountId, getKeyBindings, loadConfig, saveConfig, setKeyBinding } from './config-cache';
 import { friendsCache, keysCache, readFriends, readKeys } from './contact-lists';
-import { injectGroupStyle, refreshButton } from './groupPanel';
+import { bindRefreshButton, injectGroupStyle, refreshButton } from './groupPanel';
+import { listSkeleton } from './list-skeleton';
 import type { KeyBinding, KeyInfo, PgpConfig } from '@/shared/types';
 
 const NS = 'qwqnt-pgp';
@@ -96,7 +98,7 @@ export async function mountSettings(): Promise<void> {
       const hako = (window as unknown as { PluginSettings?: { renderer?: { registerPluginSettings?: (pkg: unknown) => Promise<HTMLElement> } } }).PluginSettings;
       if (registrationStarted || !hako?.renderer?.registerPluginSettings) return;
       registrationStarted = true;
-      host = await hako.renderer.registerPluginSettings({ name: NS, qwqnt: { name: 'PGP 加密', icon: './icon.svg' } });
+      host = await hako.renderer.registerPluginSettings({ name: NS, qwqnt: { name: t("settings.title"), icon: './plugin.asar/icon.svg' } });
       if (!host || !root.isConnected) return;
       mountedRoot = root;
       mountedHost = host;
@@ -108,7 +110,7 @@ export async function mountSettings(): Promise<void> {
     config = next;
     renderInto(host);
     mounted = true;
-    log('设置页挂载完成');
+    log("设置页挂载完成");
   } catch (err) {
     log(`设置页挂载失败：${String(err)}`);
     mounted = false;
@@ -157,7 +159,7 @@ function enhanceSelects(root: HTMLElement): void {
     trigger.setAttribute('role', 'combobox');
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
-    trigger.setAttribute('aria-label', select.getAttribute('aria-label') || select.closest('.qwqnt-pgp-row')?.querySelector('label')?.textContent || '选择');
+    trigger.setAttribute('aria-label', select.getAttribute('aria-label') || select.closest('.qwqnt-pgp-row')?.querySelector('label')?.textContent || t("settings.select"));
     const list = document.createElement('div');
     list.className = 'setting-option';
     list.id = `qwqnt-pgp-select-options-${++selectMenuSequence}`;
@@ -173,7 +175,7 @@ function enhanceSelects(root: HTMLElement): void {
     const options = (): HTMLOptionElement[] => Array.from(select.options);
     const syncTrigger = (): void => {
       const selected = options()[select.selectedIndex];
-      trigger.textContent = selected?.textContent?.trim() || '选择';
+      trigger.textContent = selected?.textContent?.trim() || t("settings.select");
       trigger.title = selected?.textContent?.trim() ?? '';
       for (const [index, item] of Array.from(list.querySelectorAll<HTMLButtonElement>('.setting-item')).entries()) {
         item.setAttribute('aria-selected', String(index === select.selectedIndex));
@@ -293,8 +295,7 @@ function injectStyle(): void {
     outline:2px solid var(--brand_standard,#0099ff);
     outline-offset:-2px;
   }
-  .qwqnt-pgp-setting-select { position:relative; flex:0 1 120px; width:120px; min-width:0; height:26px; margin-inline-start:auto; --qwqnt-pgp-select-bg:#fff; }
-  .qwqnt-pgp-setting-select:has(> #qwqnt-pgp-ownKey) { flex:1; width:auto; margin-inline-start:0; }
+  .qwqnt-pgp-setting-select { position:relative; flex:1; min-width:0; height:26px; --qwqnt-pgp-select-bg:#fff; }
   .qwqnt-pgp-native-select { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
   .qwqnt-pgp-setting-select .setting-view { box-sizing:border-box; display:block; width:100%; height:100%; padding:0 24px 0 8px; border:1px solid rgba(127,127,127,.2); border-radius:4px; background:transparent; color:var(--text_primary,inherit); text-align:left; font:inherit; font-weight:400; font-size:12px; line-height:24px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
   .qwqnt-pgp-setting-select .setting-view::after { content:''; position:absolute; right:10px; top:50%; width:7px; height:7px; border-right:1px solid currentColor; border-bottom:1px solid currentColor; transform:translateY(-65%) rotate(45deg); }
@@ -324,13 +325,15 @@ function injectStyle(): void {
     font-size: 13px; font-family: inherit; outline: none; }
   #qwqnt-pgp-testCipher { height:132px; }
   .qwqnt-pgp-contact-panel { display:grid; gap:8px; min-width:0; }
-  .qwqnt-pgp-contact-scroll { overflow-y:auto; overscroll-behavior-y:auto; scrollbar-gutter:stable; scrollbar-width:thin !important; scrollbar-color:var(--text_tertiary,rgba(127,127,127,.55)) transparent; }
-  .qwqnt-pgp-contact-scroll::-webkit-scrollbar { display:block !important; width:6px !important; }
+  .qwqnt-pgp-contact-scroll { box-sizing:border-box; overflow-y:auto; overscroll-behavior-y:auto; scrollbar-width:thin !important; scrollbar-color:var(--text_tertiary,rgba(127,127,127,.55)) transparent; }
+  .qwqnt-pgp-contact-scroll::-webkit-scrollbar { width:6px !important; }
   .qwqnt-pgp-contact-scroll::-webkit-scrollbar-thumb { background:var(--text_tertiary,rgba(127,127,127,.55)); border-radius:6px; }
   .qwqnt-pgp-contact-scroll:focus-visible { outline:2px solid var(--brand_standard,#0099ff); outline-offset:-2px; }
+  .qwqnt-pgp-list-empty { height:100%; display:grid; place-items:center; text-align:center; color:var(--text_secondary,inherit); font-size:12px; }
+  .qwqnt-pgp-list-end { box-sizing:border-box; height:var(--pgp-row-height,36px); display:grid; place-items:center; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); color:var(--text_secondary,inherit); font-size:12px; }
   #qwqnt-pgp-keyList { max-height:calc(5 * 94px); }
   #qwqnt-pgp-keyList > .qwqnt-pgp-item:has(.qwqnt-pgp-bindRow) { box-sizing:border-box; block-size:94px; overflow:auto; }
-  #qwqnt-pgp-binding-list { max-height:calc(5 * 42px); }
+  #qwqnt-pgp-binding-list { --pgp-row-height:42px; height:212px; }
   #qwqnt-pgp-binding-list > .qwqnt-pgp-binding-row { box-sizing:border-box; block-size:42px; }
   .qwqnt-pgp-network-github { margin-top:12px; padding-top:12px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); }
   .qwqnt-pgp-binding-row { display:flex; align-items:center; gap:8px; min-width:0; padding:7px 10px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); font-size:12px; }
@@ -338,9 +341,9 @@ function injectStyle(): void {
   .qwqnt-pgp-binding-row .binding-uin { flex:none; font-variant-numeric:tabular-nums; user-select:text; cursor:text; }
   .qwqnt-pgp-binding-row .binding-uid { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.75; }
   .qwqnt-pgp-binding-row .binding-key { flex:none; text-align:right; white-space:nowrap; opacity:.75; font-variant-numeric:tabular-nums; }
-  #qwqnt-pgp-friends { max-height:calc(3 * 36px); }
+  #qwqnt-pgp-friends { height:110px; }
   #qwqnt-pgp-friends .qwqnt-pgp-friend { min-height:36px; }
-  #qwqnt-pgp-bind-keys { max-height:108px; }
+  #qwqnt-pgp-bind-keys { height:110px; }
   #qwqnt-pgp-bind-keys .qwqnt-pgp-friend { min-height:36px; }
   .qwqnt-pgp-friend { display:flex; align-items:center; gap:6px; min-height:52px; box-sizing:border-box; padding:6px 8px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.16)); cursor:pointer; }
   .qwqnt-pgp-friend:first-child { border-top:0; }
@@ -350,8 +353,13 @@ function injectStyle(): void {
   .qwqnt-pgp-friend img { flex:none; width:18px; height:18px; border-radius:50%; object-fit:cover; }
   .qwqnt-pgp-friend .friend-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; line-height:18px; }
   .qwqnt-pgp-friend .friend-detail { flex:none; text-align:right; white-space:nowrap; font-size:11px; font-variant-numeric:tabular-nums; color:var(--text_secondary,inherit); }
-  .qwqnt-pgp-bind-controls > .qwqnt-pgp-row > label { width:auto; }
   .qwqnt-pgp-bind-controls { display:grid; gap:8px; }
+  .qwqnt-pgp-bind-controls > .qwqnt-pgp-row { column-gap:6px; }
+  .qwqnt-pgp-bind-controls > .qwqnt-pgp-row > label { width:auto; margin-inline-end:4px; }
+  .qwqnt-pgp-friend-search-controls { display:flex; flex:1; min-width:0; gap:6px; }
+  .qwqnt-pgp-bind-controls .qwqnt-pgp-field { box-sizing:border-box; min-width:0; block-size:28px; }
+  #qwqnt-pgp-add-uin { box-sizing:border-box; flex:none; min-inline-size:44px; block-size:28px; padding-inline:8px; margin:0; }
+  .qwqnt-pgp-bind-controls .qwqnt-pgp-group-refresh { flex:0 0 24px; block-size:28px; margin:0; }
   #qwqnt-pgp-bind-submit { inline-size:100%; min-block-size:32px; }
   #qwqnt-pgp-bind-submit:disabled { opacity:.45; cursor:default; }
   .qwqnt-pgp-section-heading { margin:16px 12px 8px; font-size:14px; font-weight:600; }
@@ -369,28 +377,35 @@ function renderConfigSection(): HTMLElement {
   sec.className = 'qwqnt-pgp-sec';
   const cfg = config!;
   sec.innerHTML = `
-    <h2 class="qwqnt-pgp-section-heading">基本设置</h2>
+    <h2 class="qwqnt-pgp-section-heading">${tHtml("settings.general")}</h2>
     <details class="qwqnt-pgp-details">
-      <summary>加密解密</summary><div class="qwqnt-pgp-details-body">
-        <div class="qwqnt-pgp-row qwqnt-pgp-bool"><label id="qwqnt-pgp-autoDecrypt-label">自动解密</label><input id="qwqnt-pgp-autoDecrypt" class="qwqnt-pgp-switch-input" type="checkbox" aria-hidden="true" tabindex="-1" ${cfg.autoDecrypt ? 'checked' : ''}><div id="qwqnt-pgp-autoDecrypt-switch" class="q-switch qwqnt-pgp-switch${cfg.autoDecrypt ? ' is-active' : ''}" role="switch" tabindex="0" aria-labelledby="qwqnt-pgp-autoDecrypt-label" aria-checked="${cfg.autoDecrypt}"><span class="q-switch__handle"></span></div></div>
-        <div class="qwqnt-pgp-row"><label>我的公钥</label><select id="qwqnt-pgp-ownKey" class="qwqnt-pgp-select" aria-busy="true"><option value=""></option></select></div>
-        <div class="qwqnt-pgp-row"><label>gpg 路径</label><input id="qwqnt-pgp-gpgPath" type="text" placeholder="自动探测" value="${escapeAttr(cfg.gpgPath)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-detect">检测</button></div>
-        <div class="qwqnt-pgp-row"><label>钥匙串目录</label><input id="qwqnt-pgp-gpgHome" type="text" placeholder="使用默认目录" value="${escapeAttr(cfg.gpgHome)}"></div>
+      <summary>${tHtml("settings.cryptography")}</summary><div class="qwqnt-pgp-details-body">
+        <div class="qwqnt-pgp-row qwqnt-pgp-bool"><label id="qwqnt-pgp-autoDecrypt-label">${tHtml("settings.autoDecrypt")}</label><input id="qwqnt-pgp-autoDecrypt" class="qwqnt-pgp-switch-input" type="checkbox" aria-hidden="true" tabindex="-1" ${cfg.autoDecrypt ? 'checked' : ''}><div id="qwqnt-pgp-autoDecrypt-switch" class="q-switch qwqnt-pgp-switch${cfg.autoDecrypt ? ' is-active' : ''}" role="switch" tabindex="0" aria-labelledby="qwqnt-pgp-autoDecrypt-label" aria-checked="${cfg.autoDecrypt}"><span class="q-switch__handle"></span></div></div>
+        <div class="qwqnt-pgp-row"><label>${tHtml("settings.ownPublicKey")}</label><select id="qwqnt-pgp-ownKey" class="qwqnt-pgp-select" aria-busy="true"><option value=""></option></select></div>
+        <div class="qwqnt-pgp-row"><label>${tHtml("settings.gpgPath")}</label><input id="qwqnt-pgp-gpgPath" type="text" placeholder="${tHtml("settings.detectAutomatically")}" value="${escapeHtml(cfg.gpgPath)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-detect">${tHtml("settings.detect")}</button></div>
+        <div class="qwqnt-pgp-row"><label>${tHtml("settings.keyringDirectory")}</label><input id="qwqnt-pgp-gpgHome" type="text" placeholder="${tHtml("settings.defaultDirectory")}" value="${escapeHtml(cfg.gpgHome)}"></div>
         <div class="qwqnt-pgp-hint" id="qwqnt-pgp-gpgStatus" role="status"></div>
       </div>
     </details>
     <details class="qwqnt-pgp-details">
-      <summary>发送设置</summary><div class="qwqnt-pgp-details-body">
-        <div class="qwqnt-pgp-row"><label>发送策略</label><select id="qwqnt-pgp-sendPolicy" class="qwqnt-pgp-select">
-          <option value="manual" ${cfg.sendPolicy === 'manual' ? 'selected' : ''}>快捷键手动加密</option><option value="auto" ${cfg.sendPolicy === 'auto' ? 'selected' : ''}>发送时自动加密</option><option value="off" ${cfg.sendPolicy === 'off' ? 'selected' : ''}>不加密</option>
+      <summary>${tHtml("settings.other")}</summary><div class="qwqnt-pgp-details-body">
+        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-locale">${tHtml('locale.label')}</label><select id="qwqnt-pgp-locale" class="qwqnt-pgp-select"></select></div>
+        <div class="qwqnt-pgp-row"><label>${tHtml("settings.sendPolicy")}</label><select id="qwqnt-pgp-sendPolicy" class="qwqnt-pgp-select">
+          <option value="manual" ${cfg.sendPolicy === 'manual' ? 'selected' : ''}>${tHtml("settings.manualSend")}</option><option value="auto" ${cfg.sendPolicy === 'auto' ? 'selected' : ''}>${tHtml("settings.autoSend")}</option><option value="off" ${cfg.sendPolicy === 'off' ? 'selected' : ''}>${tHtml("settings.noEncryption")}</option>
         </select></div>
-        <div class="qwqnt-pgp-row"><label>加密快捷键</label><input id="qwqnt-pgp-hotkey" type="text" readonly placeholder="按组合键" value="${escapeAttr(cfg.hotkey)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-hotkeyReset">重置</button></div>
+        <div class="qwqnt-pgp-row"><label>${tHtml("settings.encryptionShortcut")}</label><input id="qwqnt-pgp-hotkey" type="text" readonly placeholder="${tHtml("settings.pressShortcut")}" value="${escapeHtml(cfg.hotkey)}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-hotkeyReset">${tHtml("settings.reset")}</button></div>
       </div>
     </details>
     <div class="qwqnt-pgp-hint" id="qwqnt-pgp-saveState" role="status"></div>
   `;
 
   const get = <T extends HTMLElement>(id: string) => sec.querySelector<T>(`#${id}`)!;
+  const locale = get<HTMLSelectElement>('qwqnt-pgp-locale');
+  for (const language of supportedLocales) {
+    const name = new Intl.DisplayNames([language], { type: 'language' }).of(language);
+    locale.add(new Option(language === 'zh-CN' ? t('locale.zh-CN') : name ?? language, language));
+  }
+  locale.value = getLocale();
 
   // 快捷键录制
   const hotkeyInput = get<HTMLInputElement>('qwqnt-pgp-hotkey');
@@ -408,7 +423,7 @@ function renderConfigSection(): HTMLElement {
     if (e.shiftKey) parts.push('Shift');
     if (e.metaKey) parts.push('Meta');
     if (!parts.length) {
-      toast('至少要带一个修饰键（Ctrl / Alt / Shift）');
+      toast(t("settings.shortcutRequiresModifier"));
       return;
     }
     parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
@@ -420,15 +435,20 @@ function renderConfigSection(): HTMLElement {
   });
 
   get<HTMLInputElement>('qwqnt-pgp-detect').addEventListener('click', async () => {
-    const st = await window.QwQNTPgp.detectGpg();
-    get('qwqnt-pgp-gpgStatus').textContent = st.ok
-      ? `检测成功：${st.version}（${st.path}）`
-      : `检测失败：${st.error ?? '没找到 gpg'}`;
-    if (st.ok) get<HTMLInputElement>('qwqnt-pgp-gpgPath').value = st.path;
+    try {
+      const st = await window.QwQNTPgp.detectGpg();
+      if (!st.ok) throw new Error(st.error);
+      get('qwqnt-pgp-gpgStatus').textContent = t("settings.detectionSucceeded", st.version, st.path);
+      get<HTMLInputElement>('qwqnt-pgp-gpgPath').value = st.path;
+    } catch (error) {
+      log(`GnuPG 检测失败：${String(error)}`);
+      get('qwqnt-pgp-gpgStatus').textContent = t("settings.detectionFailed");
+    }
   });
 
   // 改了就自动保存（不再需要点按钮）
   const collect = (): Partial<PgpConfig> => ({
+    locale: locale.value,
     autoDecrypt: get<HTMLInputElement>('qwqnt-pgp-autoDecrypt').checked,
     sendPolicy: get<HTMLSelectElement>('qwqnt-pgp-sendPolicy').value as PgpConfig['sendPolicy'],
     hotkey: get<HTMLInputElement>('qwqnt-pgp-hotkey').value.trim() || 'Ctrl+/',
@@ -438,12 +458,17 @@ function renderConfigSection(): HTMLElement {
 
   const autoSave = async (): Promise<void> => {
     const state = document.getElementById('qwqnt-pgp-saveState');
+    const oldLocale = getLocale();
     try {
       config = await saveConfig(collect());
+      if (getLocale() !== oldLocale && mountedHost?.contains(sec)) {
+        renderInto(mountedHost);
+        return;
+      }
       if (state) state.textContent = '';
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (state) state.textContent = `保存失败：${msg}`;
+      log(`保存设置失败：${String(err)}`);
+      if (state) state.textContent = t("chat.saveFailed");
     }
   };
 
@@ -452,7 +477,10 @@ function renderConfigSection(): HTMLElement {
       if (el.id === 'qwqnt-pgp-ownKey') {
         const ownKeyID = (el as HTMLSelectElement).value;
         if (!ownKeyID || config?.ownKeyID === ownKeyID) return;
-        void saveConfig({ ownKeyID }).then(next => { config = next; }).catch(err => toast(`保存密钥失败：${err instanceof Error ? err.message : String(err)}`));
+        void saveConfig({ ownKeyID }).then(next => { config = next; }).catch(err => {
+          log(`保存密钥失败：${String(err)}`);
+          toast(t("settings.saveKeyFailed"));
+        });
       } else void autoSave();
     });
   }
@@ -480,19 +508,19 @@ function renderContactsSection(): HTMLElement {
   const sec = document.createElement('section');
   sec.className = 'qwqnt-pgp-sec';
   sec.innerHTML = `
-    <h2 class="qwqnt-pgp-section-heading">好友管理</h2>
-    <details class="qwqnt-pgp-details qwqnt-pgp-contact-details" id="qwqnt-pgp-bind-details"><summary>绑定公钥</summary><div class="qwqnt-pgp-details-body">
+    <h2 class="qwqnt-pgp-section-heading">${tHtml("settings.friendManagement")}</h2>
+    <details class="qwqnt-pgp-details qwqnt-pgp-contact-details" id="qwqnt-pgp-bind-details"><summary>${tHtml("settings.bindPublicKey")}</summary><div class="qwqnt-pgp-details-body">
       <div class="qwqnt-pgp-bind-controls">
-        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-friend-search">好友</label><input class="qwqnt-pgp-field" id="qwqnt-pgp-friend-search" type="text" inputmode="numeric" placeholder="搜索 QQ 号"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-add-uin">添加</button>${refreshButton('刷新好友')}</div>
-        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-friends" aria-label="未绑定好友"></div>
-        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-key-search">公钥</label><input class="qwqnt-pgp-field" id="qwqnt-pgp-key-search" type="text" placeholder="搜索本机公钥">${refreshButton('刷新公钥')}</div>
-        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-bind-keys" aria-label="选择一个公钥"></div>
-        <button type="button" class="q-button q-button--middle q-button--secondary" id="qwqnt-pgp-bind-submit" disabled>绑定</button>
+        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-friend-search">${tHtml("settings.friends")}</label><div class="qwqnt-pgp-friend-search-controls"><input class="qwqnt-pgp-field" id="qwqnt-pgp-friend-search" type="text" inputmode="numeric" placeholder="${tHtml("settings.searchQqNumber")}"><button class="q-button q-button--small q-button--secondary" id="qwqnt-pgp-add-uin">${tHtml("settings.add")}</button></div>${refreshButton(t("settings.refreshFriends"))}</div>
+        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-friends" aria-label="${tHtml("settings.unboundFriends")}"></div>
+        <div class="qwqnt-pgp-row"><label for="qwqnt-pgp-key-search">${tHtml("settings.publicKey")}</label><input class="qwqnt-pgp-field" id="qwqnt-pgp-key-search" type="text" placeholder="${tHtml("settings.searchPublicKeys")}">${refreshButton(t("settings.refreshPublicKeys"))}</div>
+        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-bind-keys" aria-label="${tHtml("settings.selectPublicKey")}"></div>
+        <button type="button" class="q-button q-button--middle q-button--secondary" id="qwqnt-pgp-bind-submit" disabled>${tHtml("settings.bind")}</button>
       </div>
     </div></details>
-    <details class="qwqnt-pgp-details qwqnt-pgp-contact-details" id="qwqnt-pgp-binding-preview"><summary>绑定管理</summary><div class="qwqnt-pgp-details-body qwqnt-pgp-contact-panel">
-        <input class="qwqnt-pgp-field" id="qwqnt-pgp-binding-search" type="text" inputmode="numeric" aria-label="筛选已绑定 QQ 号" placeholder="筛选 QQ 号">
-        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-binding-list" tabindex="0" aria-label="已绑定 QQ 号列表"></div>
+    <details class="qwqnt-pgp-details qwqnt-pgp-contact-details" id="qwqnt-pgp-binding-preview"><summary>${tHtml("settings.bindingManagement")}</summary><div class="qwqnt-pgp-details-body qwqnt-pgp-contact-panel">
+        <input class="qwqnt-pgp-field" id="qwqnt-pgp-binding-search" type="text" inputmode="numeric" aria-label="${tHtml("settings.filterBoundQqNumbers")}" placeholder="${tHtml("settings.filterQqNumber")}">
+        <div class="qwqnt-pgp-list qwqnt-pgp-contact-scroll" id="qwqnt-pgp-binding-list" tabindex="0" aria-label="${tHtml("settings.boundQqNumberList")}">${listSkeleton(5)}</div>
     </div></details>
   `;
   const updateCandidate = setupBindUI(sec);
@@ -537,7 +565,7 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
   const friendsList = sec.querySelector<HTMLElement>('#qwqnt-pgp-friends')!;
   const search = sec.querySelector<HTMLInputElement>('#qwqnt-pgp-friend-search')!;
   const keySearch = sec.querySelector<HTMLInputElement>('#qwqnt-pgp-key-search')!;
-  const friendRefresh = search.parentElement!.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
+  const friendRefresh = search.closest('.qwqnt-pgp-row')!.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
   const keyRefresh = keySearch.parentElement!.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
   const keyList = sec.querySelector<HTMLElement>('#qwqnt-pgp-bind-keys')!;
   const submit = sec.querySelector<HTMLButtonElement>('#qwqnt-pgp-bind-submit')!;
@@ -546,6 +574,8 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
   let bound = new Set<string>();
   let friendFailures = 0;
   let keys: KeyInfo[] = [];
+  let keysReady = false;
+  let keyLoadFailed = false;
   let selectedKeyID = '';
   let selectedFriends = new Set<string>();
   let manualIds: string[] = [];
@@ -591,7 +621,8 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
   const render = (): void => {
     updateSubmit();
     const q = search.value.trim();
-    const filtered = friends.filter(f => !bound.has(f.uin) && (selectedFriends.has(f.uin) || !q || f.uin.includes(q)));
+    const self = getActiveAccountId();
+    const filtered = friends.filter(f => f.uin !== self && !bound.has(f.uin) && (selectedFriends.has(f.uin) || !q || f.uin.includes(q)));
     const friendScroll = friendsList.scrollTop;
     const keyScroll = keyList.scrollTop;
     const focusedFriend = document.activeElement instanceof HTMLElement && friendsList.contains(document.activeElement)
@@ -599,10 +630,11 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
     const focusedKey = document.activeElement instanceof HTMLElement && keyList.contains(document.activeElement)
       ? document.activeElement.dataset.choice : undefined;
     friendsList.replaceChildren();
+    if (!friendsReady && !friendFailures) friendsList.innerHTML = listSkeleton(3, true);
     const selected = filtered.filter(friend => selectedFriends.has(friend.uin));
     const unselected = filtered.filter(friend => !selectedFriends.has(friend.uin));
     const orderedManual = manualIds.filter(uin => !bound.has(uin) && selectedManual.has(uin));
-    if ((friendsReady || friendFailures) && !filtered.length && !orderedManual.length) friendsList.textContent = friendFailures ? '部分好友绑定状态读取失败' : '没有匹配的未绑定好友';
+    if ((friendsReady || friendFailures) && !filtered.length && !orderedManual.length) appendListStatus(friendsList, friendFailures ? t("settings.partialFriendBindingLoadFailed") : t("settings.noMatchingUnboundFriends"));
     const renderPerson = (uin: string, name: string, selectedSet: Set<string>, manualPerson: boolean): void => {
       const row = document.createElement('div'); row.className = 'qwqnt-pgp-friend';
       const checkbox = choice(row, uin, `${name}，QQ ${uin}`, selectedSet.has(uin), checked => {
@@ -612,17 +644,19 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
       const avatar = document.createElement('img'); avatar.alt = ''; avatar.loading = 'lazy'; avatar.decoding = 'async'; avatar.src = `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(uin)}&s=100`;
       const label = document.createElement('span'); label.className = 'friend-label'; label.textContent = name;
       const detail = document.createElement('span'); detail.className = 'friend-detail'; detail.textContent = uin;
-      row.title = `${name}\nQQ ${uin}${manualPerson ? '（手动添加）' : ''}`;
+      row.title = `${name}\nQQ ${uin}${manualPerson ? t("settings.manuallyAdded") : ''}`;
       row.append(avatar, label, detail, checkbox); friendsList.append(row);
       if (focusedFriend === uin) checkbox.focus({ preventScroll: true });
     };
     for (const friend of selected) renderPerson(friend.uin, friend.name, selectedFriends, false);
     for (const uin of orderedManual) renderPerson(uin, manualNames.get(uin) || uin, selectedManual, true);
     for (const friend of unselected) renderPerson(friend.uin, friend.name, selectedFriends, false);
+    if (friendsReady && !friendFailures && filtered.length + orderedManual.length > 0 && filtered.length + orderedManual.length < 3) appendListStatus(friendsList);
     const keyQuery = keySearch.value.trim().toLocaleLowerCase();
     keyList.replaceChildren();
     const shownKeys = keys.filter(key => !keyQuery || [key.keyID, key.fingerprint, ...key.userIds].join(' ').toLocaleLowerCase().includes(keyQuery));
-    if (!shownKeys.length) keyList.textContent = keys.length ? '没有匹配的公钥' : '没有可用的公钥';
+    if (!keysReady && !keyLoadFailed) keyList.innerHTML = listSkeleton(3);
+    else if (!shownKeys.length) appendListStatus(keyList, keys.length ? t("settings.noMatchingPublicKeys") : keyLoadFailed ? t("settings.loadPublicKeysFailed") : t("settings.noPublicKeys"));
     for (const key of shownKeys) {
       const row = document.createElement('div'); row.className = 'qwqnt-pgp-friend';
       const identity = key.fingerprint || key.keyID;
@@ -636,6 +670,7 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
       row.append(label, detail, checkbox); keyList.append(row);
       if (focusedKey === identity) checkbox.focus({ preventScroll: true });
     }
+    if (shownKeys.length > 0 && shownKeys.length < 3) appendListStatus(keyList);
     friendsList.scrollTop = friendScroll;
     keyList.scrollTop = keyScroll;
   };
@@ -650,7 +685,7 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
   };
   const load = async <T>(
     refresh: HTMLButtonElement,
-    peek: (account: string) => T | undefined,
+    peek: (account: string) => T | undefined | Promise<T | undefined>,
     read: (account: string, force: boolean) => Promise<T>,
     apply: (value: T, current: () => boolean) => void | Promise<void>,
     force: boolean,
@@ -662,8 +697,9 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
     refresh.disabled = true;
     refresh.setAttribute('aria-busy', 'true');
     try {
-      const cached = peek(account);
-      if (!force && cached !== undefined) {
+      const cached = force ? undefined : await Promise.resolve(peek(account)).catch(() => undefined);
+      if (!current()) return;
+      if (cached !== undefined) {
         await apply(cached, current);
         if (!current()) return;
         render();
@@ -673,7 +709,12 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
       if (force || fresh !== cached) await apply(fresh, current);
       if (current()) render();
     } catch {
-      if (current() && details.open) toast(`${refresh.getAttribute('aria-label')}失败`);
+      if (current()) {
+        if (refresh === friendRefresh && !friendsReady) friendFailures = 1;
+        if (refresh === keyRefresh && !keysReady) keyLoadFailed = true;
+        render();
+        if (details.open) toast(t("settings.refreshFailed", refresh.getAttribute('aria-label')));
+      }
     } finally {
       if (current()) {
         refresh.disabled = false;
@@ -681,9 +722,8 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
       }
     }
   };
-  let sharedFriends: FriendEntry[] | undefined;
   const loadFriends = (force = false): Promise<void> => load(
-    friendRefresh, account => friendsCache.peek(account) ?? sharedFriends, readFriends, async (entries, current) => {
+    friendRefresh, account => friendsCache.peek(account) ?? window.QwQNTPgp.cachedFriends(), readFriends, async (entries, current) => {
       const state = bindingPages.get(sec);
       if (!state?.items) await refreshBindingPage(sec);
       if (!current()) return;
@@ -716,31 +756,34 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
     }, force,
   );
   const loadKeys = (force = false): Promise<void> => load(
-    keyRefresh, account => keysCache.peek(account), readKeys, inventory => {
+    keyRefresh, account => keysCache.peek(account) ?? window.QwQNTPgp.cachedKeys(), readKeys, inventory => {
+      keysReady = true;
+      keyLoadFailed = false;
       keys = inventory.public.filter(key => !key.expired && !key.revoked && !!(key.fingerprint || key.keyID));
     }, force,
   );
-  const initialAccount = getActiveAccountId();
-  const warmFriends = initialAccount ? window.QwQNTPgp.cachedFriends().then(entries => {
-    if (entries && sec.isConnected && getActiveAccountId() === initialAccount && !friendsCache.peek(initialAccount)) {
-      sharedFriends = entries;
-    }
-  }).catch(err => log(`读取好友缓存失败：${String(err)}`)) : Promise.resolve();
-  void warmFriends.then(() => loadFriends());
+  // The section is attached after this builder returns.
+  queueMicrotask(() => {
+    if (!sec.isConnected) return;
+    render();
+    void loadFriends();
+    void loadKeys();
+  });
   details.addEventListener('toggle', () => {
     if (details.open) {
-      void warmFriends.then(() => { if (details.open && sec.isConnected) void loadFriends(); });
+      void loadFriends();
       void loadKeys();
     } else clearTemporary();
   });
-  friendRefresh.addEventListener('click', () => void loadFriends(true));
-  keyRefresh.addEventListener('click', () => void loadKeys(true));
+  bindRefreshButton(friendRefresh, () => void loadFriends(true));
+  bindRefreshButton(keyRefresh, () => void loadKeys(true));
   search.addEventListener('input', () => { const digits = search.value.replace(/\D/g, ''); if (digits !== search.value) search.value = digits; render(); });
   keySearch.addEventListener('input', render);
   const addManual = async (): Promise<void> => {
     const request = generation, account = settingsAccountEpoch;
     const uin = search.value.trim();
-    if (!/^[1-9]\d{0,19}$/.test(uin)) { toast('请输入有效的数字 QQ 号'); return; }
+    if (!/^[1-9]\d{0,19}$/.test(uin)) { toast(t("contact.invalidQqNumber")); return; }
+    if (uin === getActiveAccountId()) { toast(t("binding.manageOwnKeyInSettings")); return; }
     try {
       const bindings = await window.QwQNTPgp.getKeyBindings([uin]);
       if (request !== generation || account !== settingsAccountEpoch || !details.open) return;
@@ -748,7 +791,7 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
         bound.add(uin);
         selectedFriends.delete(uin);
         selectedManual.delete(uin);
-        toast('该 QQ 号已绑定');
+        toast(t("settings.alreadyBound"));
         render();
         return;
       }
@@ -756,13 +799,16 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
         selectedFriends.add(uin);
         search.value = ''; render(); return;
       }
-      let contact: FriendEntry = { uin, name: 'QQ 用户' };
+      let contact: FriendEntry = { uin, name: t("settings.unknownQqUser") };
       try { contact = await window.QwQNTPgp.lookupContact(uin); } catch { /* 保留 QQ 用户兜底名 */ }
       if (request !== generation || account !== settingsAccountEpoch || !details.open) return;
       if (!manualIds.includes(uin)) manualIds.push(uin);
       manualNames.set(uin, contact.name); selectedManual.add(uin);
       search.value = ''; render();
-    } catch (err) { if (request === generation && account === settingsAccountEpoch) toast(`检查绑定状态失败：${err instanceof Error ? err.message : String(err)}`); }
+    } catch (err) {
+      log(`检查绑定状态失败：${String(err)}`);
+      if (request === generation && account === settingsAccountEpoch) toast(t("settings.checkBindingFailed"));
+    }
   };
   sec.querySelector<HTMLButtonElement>('#qwqnt-pgp-add-uin')!.addEventListener('click', () => void addManual());
   search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void addManual(); } });
@@ -787,11 +833,14 @@ function setupBindUI(sec: HTMLElement): (uin: string) => void {
         search.value = '';
         keySearch.value = '';
       }
-      toast(failed.length ? `已绑定 ${succeeded.length} 个，失败 ${failed.length} 个（仍保留失败项）` : `已绑定 ${succeeded.length} 个 QQ 号`);
+      toast(failed.length ? t("settings.bindingPartialSuccess", succeeded.length, failed.length) : t("settings.bindingSuccess", succeeded.length));
       const page = sec.querySelector<HTMLElement>('#qwqnt-pgp-binding-list')?.closest('section');
       if (page && succeeded.length) updateBindingPreview(page, succeeded, keyID);
       render();
-    } catch (err) { if (request === generation && account === settingsAccountEpoch) toast(`绑定失败：${err instanceof Error ? err.message : String(err)}`); }
+    } catch (err) {
+      log(`绑定失败：${String(err)}`);
+      if (request === generation && account === settingsAccountEpoch) toast(t("settings.bindingFailed"));
+    }
     finally {
       if (request === generation && account === settingsAccountEpoch) {
         submitting = false;
@@ -830,20 +879,29 @@ function updateBindingPreview(sec: HTMLElement, uins: string[], keyID?: string):
   void refreshBindingPage(sec);
 }
 
+function appendListStatus(list: HTMLElement, emptyMessage?: string): void {
+  const status = document.createElement('div');
+  status.className = emptyMessage ? 'qwqnt-pgp-list-empty' : 'qwqnt-pgp-list-end';
+  status.textContent = emptyMessage ?? t("chat.noMoreEntries");
+  list.append(status);
+}
+
 function renderBindingPage(sec: HTMLElement, append = false): void {
   const state = bindingPages.get(sec);
   const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-binding-list');
   if (!state?.items || !list) return;
-  const matches = state.items.filter(binding => binding.uin.includes(state.searchUin));
+  const self = getActiveAccountId();
+  const matches = state.items.filter(binding => binding.uin !== self && binding.uin.includes(state.searchUin));
   const start = append ? state.shown : 0;
   if (append) {
     if (start >= matches.length) return;
     state.shown += 50;
   } else {
     list.replaceChildren();
-    if (!matches.length) list.textContent = state.searchUin ? '没有匹配的 QQ 号' : '暂无联系人绑定';
+    if (!matches.length) appendListStatus(list, state.searchUin ? t("settings.noMatchingQqNumber") : t("settings.noFriendBindings"));
   }
   for (const binding of matches.slice(start, state.shown)) list.append(renderBindingRow(sec, binding));
+  if (!append && matches.length > 0 && matches.length < 5) appendListStatus(list);
 }
 
 async function refreshBindingPage(sec: HTMLElement): Promise<void> {
@@ -862,7 +920,14 @@ async function refreshBindingPage(sec: HTMLElement): Promise<void> {
       state.expires = Date.now() + 5_000;
       renderBindingPage(sec);
     } catch {
-      if (current() && !state.items) toast('读取联系人绑定失败');
+      if (current() && !state.items) {
+        const list = sec.querySelector<HTMLElement>('#qwqnt-pgp-binding-list');
+        if (list) {
+          list.replaceChildren();
+          appendListStatus(list, t("settings.loadFriendBindingsFailed"));
+        }
+        toast(t("settings.loadContactBindingsFailed"));
+      }
     }
   })();
   try {
@@ -889,12 +954,12 @@ function renderBindingRow(sec: HTMLElement, binding: KeyBinding): HTMLElement {
   key.textContent = fullFingerprint.slice(-16);
   key.title = [info?.uid, fullFingerprint].filter(Boolean).join('\n');
   uid.title = key.title;
-  key.setAttribute('aria-label', `密钥指纹：${fullFingerprint}`);
+  key.setAttribute('aria-label', t("settings.keyFingerprint", fullFingerprint));
   const remove = document.createElement('button');
   remove.type = 'button';
   remove.className = 'q-button q-button--small q-button--secondary';
-  remove.textContent = '解绑';
-  remove.setAttribute('aria-label', `解绑 QQ ${binding.uin}`);
+  remove.textContent = t("settings.unbind");
+  remove.setAttribute('aria-label', t("settings.unbindQqNumber", binding.uin));
   remove.addEventListener('click', async () => {
     remove.disabled = true;
     try {
@@ -902,7 +967,8 @@ function renderBindingRow(sec: HTMLElement, binding: KeyBinding): HTMLElement {
       if (sec.isConnected) updateBindingPreview(sec, [binding.uin]);
     } catch (err) {
       remove.disabled = false;
-      toast(`解绑失败：${err instanceof Error ? err.message : String(err)}`);
+      log(`解绑失败：${String(err)}`);
+      toast(t("settings.unbindFailed"));
     }
   });
   row.append(uin, uid, key, remove);
@@ -938,17 +1004,18 @@ async function refreshKeys(host: HTMLElement): Promise<void> {
     const selectedId = selected ? selected.fingerprint || selected.keyID : '';
     if (selected && !matchesKeyID(selected, config?.ownKeyID ?? '')) config = await saveConfig({ ownKeyID: selectedId });
     select.replaceChildren();
-    if (!ownKeys.length) select.add(new Option('没有可用的私钥公钥', ''));
+    if (!ownKeys.length) select.add(new Option(t("settings.noPublicKeyWithSecretKey"), ''));
     else for (const key of ownKeys) {
       const id = key.fingerprint || key.keyID;
-      const option = new Option(`${key.userIds[0] || '(无 UID)'} · ${key.keyID}`, id);
+      const option = new Option(`${key.userIds[0] || t("settings.noUserId")} · ${key.keyID}`, id);
       option.title = key.fingerprint;
       select.add(option);
     }
     select.value = selectedId;
     select.dispatchEvent(new Event('change'));
   } catch (err) {
-    select.replaceChildren(new Option(`读取钥匙串失败：${err instanceof Error ? err.message : String(err)}`, ''));
+    log(`读取钥匙串失败：${String(err)}`);
+    select.replaceChildren(new Option(t('error.keyringUnavailable'), ''));
     select.dispatchEvent(new Event('change'));
   } finally {
     select.removeAttribute('aria-busy');
@@ -961,13 +1028,4 @@ function matchesKeyID(key: KeyInfo, keyID: string): boolean {
 
 function isUsableOwnKey(key: KeyInfo): boolean {
   return key.secret && !key.expired && !key.revoked;
-}
-
-/* ---------------- 工具 ---------------- */
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
-}
-
-function escapeAttr(s: string): string {
-  return escapeHtml(s);
 }

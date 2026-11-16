@@ -35,9 +35,9 @@ function validId(value: unknown): value is string {
 }
 
 function entityPath(accountId: string, kind: 'groups' | 'bindings', id: string): string {
-  if (!accountsDir) throw new Error('联系人数据存储尚未初始化');
+  if (!accountsDir) throw new Error("联系人数据存储尚未初始化");
   const account = requireId(accountId);
-  if (!validId(id)) throw new Error('QQ号或群号必须是正整数数字字符串');
+  if (!validId(id)) throw new Error("QQ号或群号必须是正整数数字字符串");
   const dir = join(accountsDir, account, kind);
   mkdirSync(dir, { recursive: true });
   return join(dir, `${id}.json`);
@@ -103,10 +103,10 @@ export async function prepareGroupConfig(accountId: string, groupId: string, own
 export async function setGroupTarget(accountId: string, groupId: string, uin: string, enabled: boolean): Promise<GroupConfig> {
   const group = requireId(groupId);
   const member = requireId(uin);
-  if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
+  if (typeof enabled !== 'boolean') throw new Error("enabled 必须是布尔值");
   const account = requireId(accountId);
   return serialize(groupQueues, `${account}\u0000${group}`, async () => {
-    if (enabled && member !== account && !(await getKeyBindings(account, [member])).length) throw new Error('请先绑定该成员的公钥');
+    if (enabled && member !== account && !(await getKeyBindings(account, [member])).length) throw new Error("请先绑定该成员的公钥");
     const path = entityPath(accountId, 'groups', group);
     const stored = await readJson<Partial<GroupConfig>>(path, {});
     const targets = new Set(stored?.groupId === group && Array.isArray(stored.targets) && stored.targets.length <= MAX_PREPARE_GROUP_TARGETS
@@ -132,7 +132,7 @@ export async function getKeyBindings(accountId: string, uins: string[]): Promise
 
 export async function listKeyBindings(accountId: string, cursor?: string, limit = 100, query = ''): Promise<KeyBindingPage> {
   const after = cursor === undefined || cursor === '' ? '' : requireId(cursor);
-  if (typeof query !== 'string' || !/^\d*$/.test(query)) throw new Error('QQ 号筛选只接受数字');
+  if (typeof query !== 'string' || !/^\d*$/.test(query)) throw new Error("QQ 号筛选只接受数字");
   const size = Number.isInteger(limit) ? Math.max(1, Math.min(MAX_BATCH, limit)) : 100;
   const bindingsDir = join(accountsDir, requireId(accountId), 'bindings');
   mkdirSync(bindingsDir, { recursive: true });
@@ -172,11 +172,11 @@ export async function getDirectBinding(accountId: string, uin: string): Promise<
 }
 
 export async function setDirectEncryption(accountId: string, uin: string, enabled: boolean): Promise<void> {
-  if (typeof enabled !== 'boolean') throw new Error('加密开关必须是布尔值');
+  if (typeof enabled !== 'boolean') throw new Error("加密开关必须是布尔值");
   const path = entityPath(accountId, 'bindings', uin);
   await serialize(bindingQueues, path, async () => {
     const { binding } = await getDirectBinding(accountId, uin);
-    if (!binding) throw new Error('请先在好友管理中绑定公钥');
+    if (!binding) throw new Error("请先在好友管理中绑定公钥");
     await atomicWrite(path, { ...binding, directEnabled: enabled });
     emit({ accountId, kind: 'binding', id: uin });
   });
@@ -186,10 +186,12 @@ export async function setKeyBinding(accountId: string, uin: string, keyID: strin
   const id = requireId(uin);
   const path = entityPath(accountId, 'bindings', id);
   await serialize(bindingQueues, path, async () => {
-    if (onlyUnbound && (await getKeyBindings(accountId, [id])).length) throw new Error('此 QQ 号已绑定公钥');
+    const existing = onlyUnbound || id === accountId ? (await getKeyBindings(accountId, [id]))[0] : undefined;
+    if (onlyUnbound && existing) throw new Error("此 QQ 号已绑定公钥");
+    if (id === accountId && (existing?.keyID ?? null) === keyID) return;
     if (keyID === null || keyID === '') await rm(path, { force: true });
     else {
-      if (typeof keyID !== 'string' || !keyID.trim()) throw new Error('keyID 必须是非空字符串或 null');
+      if (typeof keyID !== 'string' || !keyID.trim()) throw new Error("keyID 必须是非空字符串或 null");
       await atomicWrite(path, { uin: id, keyID: keyID.trim() });
     }
     emit({ accountId, kind: 'binding', id });
@@ -197,7 +199,7 @@ export async function setKeyBinding(accountId: string, uin: string, keyID: strin
 }
 
 function requireId(value: unknown): string {
-  if (!validId(value)) throw new Error('QQ号或群号必须是正整数数字字符串');
+  if (!validId(value)) throw new Error("QQ号或群号必须是正整数数字字符串");
   return value;
 }
 

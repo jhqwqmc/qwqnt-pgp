@@ -48,7 +48,7 @@ async function saveCache(path: string, entries: Map<string, OffsetEntry>): Promi
 
 function scan(script: string, wrapper: string, arch: string): Promise<Offsets> {
   if (process.platform !== 'win32' || arch !== 'x64') {
-    return Promise.reject(new Error('进程内偏移解析目前支持 Windows x64'));
+    return Promise.reject(new Error("进程内偏移解析目前支持 Windows x64"));
   }
   return new Promise((resolve, reject) => {
     const worker = new Worker(script, { workerData: wrapper, execArgv: [] });
@@ -56,7 +56,7 @@ function scan(script: string, wrapper: string, arch: string): Promise<Offsets> {
       if (Array.isArray(value) && value.length === 2 && isOffset(value[0]) && isOffset(value[1])) {
         resolve([value[0], value[1]]);
       } else {
-        reject(new Error(typeof value === 'string' ? value : '解析器没有返回有效偏移'));
+        reject(new Error(typeof value === 'string' ? value : "解析器没有返回有效偏移"));
       }
     });
     worker.once('error', reject);
@@ -75,7 +75,7 @@ export async function resolveOffsets(
 
   const offsets: Offsets = hit ? [hit.send, hit.recv] : await scan(script, wrapper, arch);
   if (!hit && await hashFile(wrapper) !== digest) {
-    throw new Error('解析期间 QQ 内核文件发生变化，请重启 QQ');
+    throw new Error("解析期间 QQ 内核文件发生变化，请重启 QQ");
   }
   entries.delete(key);
   entries.set(key, { send: offsets[0], recv: offsets[1] });

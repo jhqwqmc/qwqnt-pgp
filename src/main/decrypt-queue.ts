@@ -1,3 +1,4 @@
+import { DECRYPT_COOLDOWN, DECRYPT_SKIPPED } from '../shared/decrypt-errors';
 /** One hardware-key operation at a time, shared by every QQ window. */
 import { createHash } from 'node:crypto';
 
@@ -28,16 +29,16 @@ export class SerialDecryptQueue<T> {
     if (resume) this.cooldowns.delete(keyHash);
     const cooldownUntil = this.cooldowns.get(keyHash) ?? 0;
     if (cooldownUntil > Date.now()) {
-      return Promise.reject(new Error('[PGP_DECRYPT_COOLDOWN] 这条消息刚刚解密失败，请稍后再试'));
+      return Promise.reject(new Error(`${DECRYPT_COOLDOWN} ${"这条消息刚刚解密失败，请稍后再试"}`));
     }
     this.cooldowns.delete(keyHash);
     const bytes = Buffer.byteLength(key, 'utf8');
     if (this.pending.size >= this.maxPendingCount || this.pendingBytes + bytes > this.maxPendingBytes) {
-      return Promise.reject(new Error('[PGP_DECRYPT_SKIPPED] 解密队列暂满，请稍后重试'));
+      return Promise.reject(new Error(`${DECRYPT_SKIPPED} ${"解密队列暂满，请稍后重试"}`));
     }
     const generation = this.generation;
     const task = this.tail.then(async () => {
-      if (generation !== this.generation) throw new Error('[PGP_DECRYPT_SKIPPED] 该任务因前一硬件解密失败而跳过，请重新触发');
+      if (generation !== this.generation) throw new Error(`${DECRYPT_SKIPPED} ${"该任务因前一硬件解密失败而跳过，请重新触发"}`);
       try {
         return await operation();
       } catch (error) {

@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 /**
  * qwqnt-pgp 主进程入口。
  * 提供配置、日志、GnuPG 和 QQ 内核 IPC 接口。
@@ -24,6 +25,7 @@ import { ListCache } from '../shared/list-cache';
 
 const friendLists = new ListCache<Awaited<ReturnType<typeof listFriends>>>(60_000);
 const keyLists = new ListCache<Awaited<ReturnType<typeof syncOwnIdentity>>['keys']>(5_000);
+let startupKeys: ReturnType<Gpg['listKeys']> | undefined;
 import { randomUUID } from 'node:crypto';
 import { extractAuthIdentity } from './account-auth';
 import { requestAuthData } from './account-auth-probe';
@@ -42,7 +44,7 @@ const cryptoQueue = new BoundedCryptoQueue();
 const ownKeyResolution = new Map<string, Promise<string>>();
 let autoSendInterceptor: AutoSendInterceptorHandle = {
   available: false,
-  reason: '自动加密发送拦截器尚未初始化',
+  reason: "自动加密发送拦截器尚未初始化",
   dispose() {},
   async waitForIdle() {}
 };
@@ -63,17 +65,23 @@ function gpgFor(accountId: string): Gpg {
   return value;
 }
 
+function processNamespace(url: string): string | undefined {
+  try {
+    const { search, searchParams } = new URL(url);
+    return searchParams.get('processGroupNS') ??
+      new URLSearchParams(decodeURIComponent(search.slice(1))).get('processGroupNS') ?? undefined;
+  } catch { return undefined; }
+}
+
 function captureAccount(event: { sender?: { id?: number; getURL?: () => string } }): AccountContext {
   const id = Number(event.sender?.id ?? 0);
-  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('无法识别IPC发送窗口');
-  let namespace: string | undefined;
-  try { namespace = new URL(event.sender?.getURL?.() ?? '').searchParams.get('processGroupNS') ?? undefined; } catch { /* no URL */ }
-  return accountContexts.capture(id, namespace);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("无法识别IPC发送窗口");
+  return accountContexts.capture(id, processNamespace(event.sender?.getURL?.() ?? ''));
 }
 
 function assertNativeAccount(context: AccountContext & { windowId?: number }): void {
   if (!accountContexts.canUseSingleNativeSession(context)) {
-    throw new Error('当前进程存在多个不同QQ会话，无法安全确定 native session；已阻止操作');
+    throw new Error("当前进程存在多个不同QQ会话，无法安全确定 native session；已阻止操作");
   }
 }
 
@@ -133,9 +141,9 @@ function installAccountObserver(interceptor: IpcInterceptorApi | null | undefine
         }
         if (windowGenerations.get(id) !== generation || wc.isDestroyed()) return;
         if (!self) throw new Error(`session UID ${uid} 未能唯一匹配登录账号`);
-        let namespace: string | undefined;
-        try { namespace = new URL(wc.getURL()).searchParams.get('processGroupNS') ?? undefined; } catch { /* no URL */ }
-        accountContexts.bindSession(id, uid, self.uin, namespace);
+        const namespace = processNamespace(wc.getURL());
+        const context = accountContexts.bindSession(id, uid, self.uin, namespace);
+        warmAccountLists(context);
         broadcastAccountChanges();
         log(`窗口 ${id} 已绑定QQ账号 ${self.uin}`);
       })().catch(error => log(`忽略未确认的QQ会话：${String(error)}`));
@@ -181,14 +189,14 @@ async function resolveAccountContext(
     const self = await getSelfLoginInfo(identity.uid);
     if (!self || (identity.uin && identity.uin !== self.uin)) throw new Error('auth identity did not match one login account');
     if (contents.isDestroyed() || (windowGenerations.get(id) ?? 0) !== generation) return null;
-    let namespace: string | undefined;
-    try { namespace = new URL(contents.getURL()).searchParams.get('processGroupNS') ?? undefined; } catch { /* no URL */ }
+    const namespace = processNamespace(contents.getURL());
     try {
       const current = accountContexts.capture(id, namespace);
       if (current.accountId === self.uin && current.selfUid === self.uid) return current;
       friendLists.delete(current.accountId);
     } catch { /* direct identity has not been established yet */ }
     const context = accountContexts.bindSession(id, self.uid, self.uin, namespace);
+    warmAccountLists(context);
     broadcastAccountChanges();
     return context;
   })().catch(error => {
@@ -206,22 +214,50 @@ function broadcastConfig(accountId: string, config: PgpConfig): void {
   }
 }
 
-async function syncOwnIdentity(accountId: string) {
-  const gpg = gpgFor(accountId);
-  const keys = await gpg.listKeys();
+function accountKeySource(accountId: string) {
+  const cfg = getConfig(accountId);
+  return { cfg, key: JSON.stringify([accountId, cfg.gpgPath, cfg.gpgHome]) };
+}
+
+function readAccountKeys(accountId: string, force = false) {
+  const { cfg, key } = accountKeySource(accountId);
+  return keyLists.get(key, async () => {
+    const initial = !force && !cfg.gpgPath && !cfg.gpgHome ? startupKeys : undefined;
+    if (initial) startupKeys = undefined;
+    return (await syncOwnIdentity(accountId, initial)).keys;
+  }, force);
+}
+
+function readAccountFriends(context: AccountContext, force = false) {
+  return friendLists.get(context.accountId, async () => {
+    assertNativeAccount(context);
+    const friends = await listFriends();
+    assertNativeAccount(context);
+    return friends;
+  }, force);
+}
+
+function warmAccountLists(context: AccountContext): void {
+  void Promise.resolve().then(() => readAccountKeys(context.accountId)).catch(error => log(`预加载公钥失败：${String(error)}`));
+  void readAccountFriends(context).catch(error => log(`预加载好友失败：${String(error)}`));
+}
+
+async function syncOwnIdentity(accountId: string, initial?: ReturnType<Gpg['listKeys']>) {
+  const keys = (await initial?.catch(() => undefined)) ?? await gpgFor(accountId).listKeys();
   const cfg = getConfig(accountId);
   const ownKeyID = chooseOwnKey(keys, cfg.ownKeyID);
   if (cfg.ownKeyID !== ownKeyID) {
     const next = saveConfig(accountId, { ownKeyID });
     broadcastConfig(accountId, next);
   }
+  await setKeyBinding(accountId, accountId, ownKeyID || null);
   return { keys, ownKeyID };
 }
 
 async function encryptWithOwnKey(accountId: string, text: string, keyIDs: string[]): Promise<string> {
   return cryptoQueue.run(Buffer.byteLength(text, 'utf8'), async () => {
     const ownKeyID = await getOwnKeyIDForSend(accountId);
-    if (!ownKeyID) throw new Error('发送必须签名：本地未找到自己的可用私钥');
+    if (!ownKeyID) throw new Error("发送必须签名：本地未找到自己的可用私钥");
     return gpgFor(accountId).encrypt(text, [...new Set([...keyIDs, ownKeyID])], ownKeyID);
   });
 }
@@ -240,7 +276,7 @@ const gzipText = promisify(gzip);
 
 async function uploadForward(opts: { selfUid: string; nodes: ForwardNode[]; groupId: number }): Promise<{ resId: string }> {
   const context = accountScope.getStore();
-  if (!context || context.selfUid !== opts.selfUid) throw new Error('当前发送账号已切换');
+  if (!context || context.selfUid !== opts.selfUid) throw new Error("当前发送账号已切换");
   assertNativeAccount(context);
   const compressedText = await gzipText(opts.nodes.map(node => node.text).join(''));
   if (compressedText.length > 25_000) throw new Error(FORWARD_TEXT_TOO_LARGE);
@@ -288,7 +324,7 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     const gpg = gpgFor(accountId);
     patch = { ...(patch ?? {}) };
     if (patch.sendPolicy === 'auto' && !autoSendInterceptor.available) {
-      throw new Error(autoSendInterceptor.reason ?? '自动加密发送拦截器不可用');
+      throw new Error(autoSendInterceptor.reason ?? "自动加密发送拦截器不可用");
     }
     if (patch.ownKeyID !== undefined) {
       patch.ownKeyID = chooseOwnKey(await gpg.listKeys(), patch.ownKeyID);
@@ -296,6 +332,7 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     const previousConfig = getConfig(accountId);
     const wasAutoDecrypt = previousConfig.autoDecrypt;
     const next = saveConfig(accountId, patch ?? {});
+    if (patch.ownKeyID !== undefined) await setKeyBinding(accountId, accountId, next.ownKeyID || null);
     if ((!wasAutoDecrypt && next.autoDecrypt) || next.ownKeyID !== previousConfig.ownKeyID) resumeDecryption();
     if (next.gpgPath !== undefined || next.gpgHome !== undefined) {
       gpg.setPaths(next.gpgPath, next.gpgHome);
@@ -328,18 +365,23 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
       return items;
     });
   });
-  ipcMain.handle('qwqnt-pgp:set-key-binding', (event, uin: string, keyID: string | null) => setKeyBinding(captureAccount(event).accountId, uin, keyID));
+  ipcMain.handle('qwqnt-pgp:set-key-binding', (event, uin: string, keyID: string | null) => {
+    const { accountId } = captureAccount(event);
+    if (uin === accountId) throw new Error(t("binding.manageOwnKeyInSettings"));
+    return setKeyBinding(accountId, uin, keyID);
+  });
   ipcMain.handle('qwqnt-pgp:bind-new-key', (event, uin: string, keyID: string) => {
-    if (typeof keyID !== 'string' || !keyID.trim()) throw new Error('请选择公钥');
+    if (typeof keyID !== 'string' || !keyID.trim()) throw new Error("请选择公钥");
     const context = captureAccount(event);
+    if (uin === context.accountId) throw new Error(t("binding.manageOwnKeyInSettings"));
     return setKeyBinding(context.accountId, uin, keyID, true);
   });
   ipcMain.handle('qwqnt-pgp:cached-friends', event => friendLists.peek(captureAccount(event).accountId));
   ipcMain.handle('qwqnt-pgp:list-friends', async (event, force?: boolean) => {
     const context = captureAccount(event);
     assertNativeAccount(context);
-    const friends = await friendLists.get(context.accountId, listFriends, force === true);
-    if (captureAccount(event).revision !== context.revision) throw new Error('账号已切换');
+    const friends = await readAccountFriends(context, force === true);
+    if (captureAccount(event).revision !== context.revision) throw new Error("账号已切换");
     assertNativeAccount(context);
     return friends;
   });
@@ -347,7 +389,7 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
     const context = captureAccount(event);
     assertNativeAccount(context);
     const contact = await lookupContact(uin);
-    if (captureAccount(event).revision !== context.revision) throw new Error('账号已切换');
+    if (captureAccount(event).revision !== context.revision) throw new Error("账号已切换");
     assertNativeAccount(context);
     return contact;
   });
@@ -361,9 +403,10 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   });
 
   ipcMain.handle('qwqnt-pgp:list-keys', (event, force?: boolean) => {
-    const id = captureAccount(event).accountId;
-    const cfg = getConfig(id);
-    return keyLists.get(JSON.stringify([id, cfg.gpgPath, cfg.gpgHome]), async () => (await syncOwnIdentity(id)).keys, force === true);
+    return readAccountKeys(captureAccount(event).accountId, force === true);
+  });
+  ipcMain.handle('qwqnt-pgp:cached-keys', event => {
+    return keyLists.peek(accountKeySource(captureAccount(event).accountId).key);
   });
 
   ipcMain.handle('qwqnt-pgp:import-key', async (event, armored: string) => gpgFor(captureAccount(event).accountId).importKey(armored));
@@ -416,9 +459,9 @@ function registerIpc(interceptor: IpcInterceptorApi | null | undefined): void {
   ipcMain.handle('qwqnt-pgp:group-members', async (event, groupId: string) => { const ctx = captureAccount(event); assertNativeAccount(ctx); return getGroupMembers(groupId); });
   ipcMain.handle('qwqnt-pgp:resolve-uin', async (event, uid: string) => { const ctx = captureAccount(event); assertNativeAccount(ctx); return resolveUin(uid); });
   ipcMain.handle('qwqnt-pgp:get-message-record', async (event, peer: { chatType: number; peerUid: string }, msgId: string) => { const ctx = captureAccount(event); assertNativeAccount(ctx); return getMessageRecord(ctx.accountId, peer, msgId); });
-  ipcMain.handle('qwqnt-pgp:recv-forward', async (event, selfUid: string, resId: string) => { const ctx = captureAccount(event); assertNativeAccount(ctx); if (ctx.selfUid !== selfUid) throw new Error('账号已切换'); return recvForwardMsg(selfUid, resId); });
+  ipcMain.handle('qwqnt-pgp:recv-forward', async (event, selfUid: string, resId: string) => { const ctx = captureAccount(event); assertNativeAccount(ctx); if (ctx.selfUid !== selfUid) throw new Error("账号已切换"); return recvForwardMsg(selfUid, resId); });
   ipcMain.handle('qwqnt-pgp:forward-upload', async (event, opts: { selfUid: string; nodes: ForwardNode[]; groupId: number }) => {
-    const ctx = captureAccount(event); assertNativeAccount(ctx); if (ctx.selfUid !== opts.selfUid) throw new Error('账号已切换');
+    const ctx = captureAccount(event); assertNativeAccount(ctx); if (ctx.selfUid !== opts.selfUid) throw new Error("账号已切换");
     const result = await uploadForward(opts);
     log(`上传合并转发成功：resId=${result.resId}`);
     return result;
@@ -439,6 +482,8 @@ export function onLoad(plugin: PluginLike): void {
     // 先开日志，再读配置（这样 initConfig 里的日志也能落盘）
     initLog(dataDir, readDebugConfig(configsDir));
     const file = initConfig(configsDir);
+    startupKeys = new Gpg().listKeys();
+    void startupKeys.catch(() => { startupKeys = undefined; });
     const interceptor = (globalThis as { IpcInterceptor?: IpcInterceptorApi }).IpcInterceptor;
     installAccountObserver(interceptor);
     autoSendInterceptor = installAutoSendInterceptor({
@@ -453,8 +498,7 @@ export function onLoad(plugin: PluginLike): void {
       },
       isCurrent: (event, context) => {
         const id = Number((event as { sender?: { id?: number; getURL?: () => string } } | null)?.sender?.id ?? 0);
-        let namespace: string | undefined;
-        try { namespace = new URL((event as { sender?: { getURL?: () => string } } | null)?.sender?.getURL?.() ?? '').searchParams.get('processGroupNS') ?? undefined; } catch { /* no URL */ }
+        const namespace = processNamespace((event as { sender?: { getURL?: () => string } } | null)?.sender?.getURL?.() ?? '');
         return id === context.windowId && accountContexts.isCurrent(id, context, namespace);
       },
       assertNativeAccount: context => assertNativeAccount(context),
@@ -466,7 +510,7 @@ export function onLoad(plugin: PluginLike): void {
       resolveUin,
       getSelfInfo: async (accountId, selfUid) => {
         const self = await getSelfLoginInfo(selfUid);
-        if (!self || self.uin !== accountId) throw new Error('当前内核会话与账号配置不匹配');
+        if (!self || self.uin !== accountId) throw new Error("当前内核会话与账号配置不匹配");
         return self;
       },
       getOwnKeyID: getOwnKeyIDForSend,
@@ -484,7 +528,7 @@ export function onLoad(plugin: PluginLike): void {
     const core = (globalThis as { qwqnt?: { core?: { version?: string; pathDll?: string } } }).qwqnt?.core;
     log(`framework v${framework?.version ?? '?'}；core v${core?.version ?? '?'}；pathDll=${core?.pathDll ?? '(无)'}`);
     log(`paths=${JSON.stringify(paths)}`);
-    log('GPG实例将在首次账号请求时按账号创建');
+    log("GPG实例将在首次账号请求时按账号创建");
   } catch (err) {
     log(`onLoad 失败：${String(err)}`);
     // eslint-disable-next-line no-console

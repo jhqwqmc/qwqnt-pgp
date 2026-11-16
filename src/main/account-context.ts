@@ -11,9 +11,9 @@ export class AccountContextRegistry {
   private readonly invalidated = new Set<number>();
 
   bindSession(windowId: number, uid: string, accountId: string, namespace?: string): AccountContext {
-    if (!Number.isSafeInteger(windowId) || windowId <= 0) throw new Error('无效的窗口身份');
-    if (!/^[1-9]\d{0,19}$/.test(accountId)) throw new Error('内核账号UIN无效');
-    if (!uid || typeof uid !== 'string') throw new Error('内核会话UID无效');
+    if (!Number.isSafeInteger(windowId) || windowId <= 0) throw new Error("无效的窗口身份");
+    if (!/^[1-9]\d{0,19}$/.test(accountId)) throw new Error("内核账号UIN无效");
+    if (!uid || typeof uid !== 'string') throw new Error("内核会话UID无效");
     const existing = this.windows.get(windowId);
     if (!this.invalidated.has(windowId) && existing?.context.accountId === accountId && existing.context.selfUid === uid && existing.namespace === namespace) {
       return existing.context;
@@ -33,7 +33,7 @@ export class AccountContextRegistry {
   }
 
   capture(windowId: number, namespace?: string): AccountContext {
-    if (this.invalidated.has(windowId)) throw new Error('QQ会话身份正在重新确认');
+    if (this.invalidated.has(windowId)) throw new Error("QQ会话身份正在重新确认");
     const direct = this.windows.get(windowId);
     if (direct) return direct.context;
     if (namespace) {
@@ -44,7 +44,7 @@ export class AccountContextRegistry {
         revision: this.namespaceRevisions.get(namespace) ?? owners[0].context.revision
       });
     }
-    throw new Error('当前窗口尚未绑定已确认的QQ账号');
+    throw new Error("当前窗口尚未绑定已确认的QQ账号");
   }
 
   isCurrent(windowId: number, context: AccountContext, namespace?: string): boolean {
@@ -87,6 +87,6 @@ export class AccountContextRegistry {
 
 export function accountIdFromLoginList(uid: string, rows: Array<Record<string, unknown>>): string {
   const matches = rows.filter(row => row.uid === uid && typeof row.uin === 'string' && /^[1-9]\d{0,19}$/.test(row.uin));
-  if (matches.length !== 1) throw new Error('无法将当前会话UID唯一映射到QQ账号');
+  if (matches.length !== 1) throw new Error("无法将当前会话UID唯一映射到QQ账号");
   return String(matches[0].uin);
 }

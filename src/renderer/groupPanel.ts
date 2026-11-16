@@ -1,3 +1,4 @@
+import { escapeHtml, t, tHtml } from '../shared/i18n';
 /**
  * 群聊详情面板注入：在群成员卡片和群公告之间插入默认展开的 PGP 成员列表。
  * 仅列出已配置公钥的群友；开关决定发送时是否给这个人加密（自己永远加密）。
@@ -6,6 +7,7 @@ import { log } from './log';
 import { getCurrentPeer, getCurAio, getUinByUid, resolvePeerUin, setUidUin } from './store';
 import { getActiveAccountId, getGroupConfig, getKeyBindings, loadAccountContext, prepareGroupConfig, setGroupTarget } from './config-cache';
 import { toast } from './toast';
+import { listSkeleton, listSkeletonCss } from './list-skeleton';
 import { isDirectChat } from '../shared/chat-type';
 
 const PANEL_ID = 'qwqnt-pgp-group-panel';
@@ -47,6 +49,13 @@ const groupMembersCache = new Map<string, { promise: Promise<Member[]>; expiresA
 const targetSaveQueues = new Map<string, Promise<void>>();
 const unresolvedGroupIds = new Map<string, number>();
 const resolvingGroupIds = new Set<string>();
+let lastPopoutState = '';
+
+function logPopoutState(state: string): void {
+  if (!/^#\/chat(?:[/?]|$)/.test(location.hash) || state === lastPopoutState) return;
+  lastPopoutState = state;
+  log(`[popout-group] ${state}`);
+}
 
 export function startGroupPanel(): void {
   if (started) return;
@@ -93,12 +102,12 @@ export function startGroupPanel(): void {
 function isGroupPanelMutation(mutation: MutationRecord): boolean {
   const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   if (target?.closest(`#${PANEL_ID}`)) return false;
-  if (target?.closest('.more-panel')) return true;
+  if (target?.closest('.more-panel, .side-panel')) return true;
   if (target?.closest('.aio .header, .aio-header, .chat-header, .header-container, header')) return true;
   for (const node of mutation.addedNodes) {
     if (!(node instanceof Element)) continue;
-    if (node.matches('.more-panel, .aio-header, .chat-header, .header-container, header, .aio .header')
-      || node.querySelector('.more-panel, .aio .header, .aio-header, .chat-header, .header-container, header')) return true;
+    if (node.matches('.more-panel, .side-panel, .aio-header, .chat-header, .header-container, header, .aio .header')
+      || node.querySelector('.more-panel, .side-panel, .aio .header, .aio-header, .chat-header, .header-container, header')) return true;
   }
   return false;
 }
@@ -134,8 +143,13 @@ async function prepareCurrentOpenChat(peer = getCurrentPeer()): Promise<void> {
     // Mark before invoking the RPC: repeated DOM mutations during the request
     // must not schedule a second cleanup for this open epoch.
     preparedOpenChatEpoch = epoch;
-    await prepareGroupConfig(uin);
-    if (epoch !== openChatEpoch || key !== openChatKey || !isCurrentAccount(accountId, accountEpoch)) return;
+    await Promise.all([
+      prepareGroupConfig(uin),
+      prefetchGroupMembers(uin, false, accountId).then(members => {
+        if (epoch !== openChatEpoch || !isCurrentAccount(accountId, accountEpoch)) return;
+        return getKeyBindings(members.map(member => member.uin).filter(isNumericUin));
+      }),
+    ]);
   } catch (err) {
     log(`打开会话时校验 PGP 配置失败：${String(err)}`);
   } finally {
@@ -157,8 +171,15 @@ function check(): void {
       }).catch(() => unresolvedGroupIds.set(uid, Date.now() + 10_000)).finally(() => resolvingGroupIds.delete(uid));
     }
   }
-  if (groupId) void prefetchGroupMembers(groupId);
   const anchors = findGroupAnchors();
+  logPopoutState(JSON.stringify({
+    accountReady: Boolean(getActiveAccountId()),
+    chatType: peer?.chatType ?? null,
+    groupResolved: Boolean(groupId),
+    aioPresent: Boolean(document.querySelector('.aio')),
+    sidePanelPresent: Boolean(document.querySelector('.side-panel')),
+    memberAnchorPresent: Boolean(anchors),
+  }));
   if (!anchors) {
     document.getElementById(PANEL_ID)?.remove();
     return;
@@ -167,35 +188,37 @@ function check(): void {
   if (existing) {
     const inPosition = existing.parentElement === anchors.host
       && !!(anchors.card.compareDocumentPosition(existing) & Node.DOCUMENT_POSITION_FOLLOWING)
-      && !!(existing.compareDocumentPosition(anchors.notice) & Node.DOCUMENT_POSITION_FOLLOWING);
+      && (anchors.notice
+        ? !!(existing.compareDocumentPosition(anchors.notice) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : anchors.card.nextElementSibling === existing);
     if (!inPosition) {
-      anchors.host.insertBefore(existing, anchors.notice);
+      anchors.host.insertBefore(existing, anchors.notice ?? anchors.card.nextSibling);
     }
     const state = panelStates.get(existing);
     if (groupId && state?.groupId !== groupId) switchGroup(existing, groupId);
     return;
   }
   const panel = createPanel();
-  anchors.host.insertBefore(panel, anchors.notice);
+  anchors.host.insertBefore(panel, anchors.notice ?? anchors.card.nextSibling);
   initializePanel(panel, groupId);
-  log('群详情面板：已在成员卡片与群公告之间注入 PGP 列表');
+  log("群详情面板：已插入加密成员列表");
 }
 
 interface GroupAnchors {
   host: HTMLElement;
   card: HTMLElement;
-  notice: HTMLElement;
+  notice: Element | null;
 }
 
 function findGroupAnchors(): GroupAnchors | null {
-  const sides = Array.from(document.querySelectorAll<HTMLElement>('.more-panel .side-panel'));
+  const sides = Array.from(document.querySelectorAll<HTMLElement>('.side-panel:has(.group-member-card)'));
   const visibleSides = sides.filter(side => side.offsetParent !== null);
   for (const side of visibleSides.length ? visibleSides : sides) {
     const card = side.querySelector<HTMLElement>('.group-member-card');
-    const notice = side.querySelector<HTMLElement>('.group-field.field--notice');
     const host = card?.parentElement;
-    if (!card || !notice || !host || host !== notice.parentElement) continue;
-    if (!(card.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+    if (!card || !host) continue;
+    const notice = Array.from(host.children).find(child => child.matches('.group-field.field--notice')
+      && Boolean(card.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? null;
     return { host, card, notice };
   }
   return null;
@@ -218,11 +241,26 @@ function looksLikeUid(value: string): boolean {
 }
 
 export function refreshButton(label: string): string {
+  const safeLabel = escapeHtml(label);
   return `
-    <button class="qwqnt-pgp-group-refresh" type="button" aria-label="${label}" title="${label}">
+    <button class="qwqnt-pgp-group-refresh" type="button" aria-label="${safeLabel}" title="${safeLabel}">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5"/><path d="M5.4 9a7 7 0 0 1 11.5-3.3L20 9M4 15l3.1 3.3A7 7 0 0 0 18.6 15"/></svg>
     </button>
   `;
+}
+
+export function bindRefreshButton(button: HTMLButtonElement, refresh: () => void): void {
+  let nextRefreshAt = 0;
+  button.addEventListener('click', () => {
+    const now = performance.now();
+    if (button.disabled || button.classList.contains('is-spinning')) return;
+    button.classList.add('is-spinning');
+    // Allow the 750 ms animation to finish after the next paint.
+    window.setTimeout(() => button.classList.remove('is-spinning'), 850);
+    if (now < nextRefreshAt) return;
+    nextRefreshAt = now + 3_000;
+    refresh();
+  });
 }
 
 function createPanel(): HTMLElement {
@@ -232,18 +270,19 @@ function createPanel(): HTMLElement {
   panel.className = 'qwqnt-pgp-group-card';
   panel.innerHTML = `
       <div class="qwqnt-pgp-group-head">
-        <span>加密成员</span>
-        ${refreshButton('刷新成员')}
+        <span>${tHtml("chat.encryptedMembers")}</span>
+        ${refreshButton(t("chat.refreshMembers"))}
       </div>
       <div class="qwqnt-pgp-group-content">
         <div class="qwqnt-pgp-group-tools">
-          <input class="qwqnt-pgp-group-search" type="search" placeholder="搜索成员、QQ 号或密钥" aria-label="搜索群成员">
+          <input class="qwqnt-pgp-group-search" type="search" placeholder="${tHtml("chat.searchMembersPlaceholder")}" aria-label="${tHtml("chat.searchMembers")}">
         </div>
         <div class="qwqnt-pgp-group-status" aria-live="polite"></div>
         <div class="qwqnt-pgp-group-list" role="list"></div>
       </div>
   `;
-  panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!.addEventListener('click', () => void loadGroup(panel, true));
+  const refresh = panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
+  bindRefreshButton(refresh, () => void loadGroup(panel, true));
   panel.querySelector<HTMLInputElement>('.qwqnt-pgp-group-search')!.addEventListener('input', e => {
     const state = panelStates.get(panel);
     if (!state) return;
@@ -258,6 +297,7 @@ export function injectGroupStyle(): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
+    ${listSkeletonCss}
     .qwqnt-pgp-group-card { box-sizing:border-box; min-width:0; margin:8px 0; padding:0 16px 8px; border-radius:8px; background:var(--fill_light_primary,var(--bg_top_standard,Canvas)); color:var(--text_primary,inherit); }
     .qwqnt-pgp-group-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; font-size:14px; }
     .qwqnt-pgp-group-content { min-width:0; }
@@ -267,15 +307,18 @@ export function injectGroupStyle(): void {
     .qwqnt-pgp-group-refresh { display:grid; place-items:center; width:24px; height:24px; padding:0; border:0; border-radius:4px; background:transparent; color:var(--text_secondary,inherit); cursor:pointer; }
     .qwqnt-pgp-group-refresh:hover:not(:disabled) { background:var(--overlay_active,rgba(127,127,127,.1)); }
     .qwqnt-pgp-group-refresh:disabled { cursor:default; }
-    .qwqnt-pgp-group-refresh[aria-busy=true] svg { animation:qwqnt-pgp-refresh-spin .75s linear infinite; }
+    .qwqnt-pgp-group-refresh:is([aria-busy=true], .is-spinning) svg { animation:qwqnt-pgp-refresh-spin .75s linear infinite; }
     @keyframes qwqnt-pgp-refresh-spin { to { transform:rotate(360deg); } }
     .qwqnt-pgp-group-status { min-height:18px; margin:4px 0; font-size:12px; opacity:.72; overflow-wrap:anywhere; }
     .qwqnt-pgp-group-status:empty { display:none; }
-    .qwqnt-pgp-group-list { box-sizing:border-box; width:100%; min-width:0; max-height:min(38vh,180px); overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+    .qwqnt-pgp-group-list { box-sizing:border-box; width:100%; min-width:0; height:180px; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:auto; }
     .qwqnt-pgp-member { box-sizing:border-box; display:flex; align-items:center; gap:8px; height:36px; min-width:0; padding:0 2px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.12)); font-size:12px; }
     .qwqnt-pgp-member:first-child { border-top:0; }
+    .qwqnt-pgp-group-end { box-sizing:border-box; display:grid; place-items:center; height:36px; border-top:1px solid var(--border_level_1,rgba(127,127,127,.12)); color:var(--text_tertiary,var(--text_secondary,inherit)); font-size:12px; }
     .qwqnt-pgp-member-name { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow:hidden; white-space:nowrap; }
-    .qwqnt-pgp-member-nick { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .qwqnt-pgp-member-avatar { flex:none; width:16px; height:16px; border-radius:50%; object-fit:cover; }
+    .qwqnt-pgp-member-nick { min-width:0; line-height:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .qwqnt-pgp-group-list .qwqnt-pgp-skeleton > .avatar { width:16px; height:16px; }
     .qwqnt-pgp-member-uin { flex:none; align-self:center; text-align:right; white-space:nowrap; font-size:11px; font-variant-numeric:tabular-nums; color:var(--text_secondary,inherit); }
     /* Keep QQ's q-switch geometry and handle styling; only reserve its row space. */
     .qwqnt-pgp-member-switch { flex:none; }
@@ -284,7 +327,7 @@ export function injectGroupStyle(): void {
     #${DM_ID}:has(+ .q-list-item)::before { content:''; position:absolute; inset-inline:16px; inset-block-end:0; block-size:1px; background:var(--border_level_1,rgba(127,127,127,.12)); pointer-events:none; }
     #${DM_ID} .q-switch[aria-disabled=true] { opacity:.55; cursor:not-allowed; }
     .qwqnt-pgp-group-list { scrollbar-width:thin !important; scrollbar-color:var(--text_tertiary,rgba(127,127,127,.55)) transparent; }
-    .qwqnt-pgp-group-list::-webkit-scrollbar { display:block !important; width:6px !important; }
+    .qwqnt-pgp-group-list::-webkit-scrollbar { width:6px !important; }
     .qwqnt-pgp-group-list::-webkit-scrollbar-thumb { background:var(--text_tertiary,rgba(127,127,127,.55)); border-radius:6px; }
   `;
   document.head.append(style);
@@ -355,7 +398,7 @@ function renderPanel(panel: HTMLElement): void {
 }
 
 function renderSummary(panel: HTMLElement, state: GroupPanelState): void {
-  panel.querySelector<HTMLElement>('.qwqnt-pgp-group-status')!.textContent = state.loading ? '' : state.error || (state.groupId ? '' : '当前群聊信息不可用');
+  panel.querySelector<HTMLElement>('.qwqnt-pgp-group-status')!.textContent = state.loading ? '' : state.error || (state.groupId ? '' : t("chat.groupUnavailable"));
   const refresh = panel.querySelector<HTMLButtonElement>('.qwqnt-pgp-group-refresh')!;
   refresh.disabled = state.loading || !state.groupId;
   refresh.setAttribute('aria-busy', String(state.loading));
@@ -365,6 +408,7 @@ function renderRows(panel: HTMLElement): void {
   const state = panelStates.get(panel);
   const list = panel.querySelector<HTMLElement>('.qwqnt-pgp-group-list');
   if (!state || !list) return;
+  const scrollTop = list.scrollTop;
   list.replaceChildren();
   const query = state.search;
   const filtered = state.members.filter(member => {
@@ -372,19 +416,20 @@ function renderRows(panel: HTMLElement): void {
     return !query || `${member.name} ${member.uin} ${key}`.toLocaleLowerCase().includes(query);
   });
   if (state.loading && !state.members.length) {
+    list.innerHTML = listSkeleton(5, true, true);
     return;
   }
   if (!state.loading && !state.error && state.members.length && !filtered.length) {
     const empty = document.createElement('div');
     empty.className = 'qwqnt-pgp-group-status';
-    empty.textContent = '没有匹配的成员';
+    empty.textContent = t("chat.noMatchingMembers");
     list.append(empty);
     return;
   }
   if (!state.loading && !state.error && state.groupId && !state.members.length) {
     const empty = document.createElement('div');
     empty.className = 'qwqnt-pgp-group-status';
-    empty.textContent = '群内暂无已绑定公钥的成员';
+    empty.textContent = t("chat.noBoundMembers");
     list.append(empty);
     return;
   }
@@ -398,19 +443,25 @@ function renderRows(panel: HTMLElement): void {
     row.title = `${member.name} (${id})${keyID ? ` · ${keyID}` : ''}`;
     const name = document.createElement('span');
     name.className = 'qwqnt-pgp-member-name';
+    const avatar = document.createElement('img');
+    avatar.className = 'qwqnt-pgp-member-avatar';
+    avatar.alt = '';
+    avatar.loading = 'lazy';
+    avatar.decoding = 'async';
+    avatar.src = `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(id)}&s=100`;
     const nick = document.createElement('span');
     nick.className = 'qwqnt-pgp-member-nick';
     nick.textContent = member.name;
     const uin = document.createElement('span');
     uin.className = 'qwqnt-pgp-member-uin';
     uin.textContent = id;
-    name.append(nick);
+    name.append(avatar, nick);
     const sw = document.createElement('div');
     sw.className = 'q-switch vue-component qwqnt-pgp-member-switch';
     sw.setAttribute('role', 'switch');
     sw.setAttribute('aria-checked', String(selected));
     sw.setAttribute('aria-disabled', String(self));
-    sw.setAttribute('aria-label', self ? `${member.name}（本人，始终加密）` : `${selected ? '关闭' : '开启'} ${member.name} 的 PGP 加密`);
+    sw.setAttribute('aria-label', self ? t("chat.selfAlwaysEncrypted", member.name) : t("chat.memberEncryptionAction", selected ? t("chat.disable") : t("chat.enable"), member.name));
     sw.tabIndex = self ? -1 : 0;
     const handle = document.createElement('span');
     handle.className = 'q-switch__handle';
@@ -424,7 +475,7 @@ function renderRows(panel: HTMLElement): void {
       state.revision++;
       state.error = '';
       sw.setAttribute('aria-checked', String(next));
-      sw.setAttribute('aria-label', `${next ? '关闭' : '开启'} ${member.name} 的 PGP 加密`);
+      sw.setAttribute('aria-label', t("chat.memberEncryptionAction", next ? t("chat.disable") : t("chat.enable"), member.name));
       sw.classList.toggle('is-active', next);
       renderSummary(panel, state);
       void persistTarget(panel, state.groupId, id, next, state.revision, getActiveAccountId() ?? '');
@@ -441,6 +492,13 @@ function renderRows(panel: HTMLElement): void {
     row.append(name, uin, sw);
     list.append(row);
   }
+  if (filtered.length > 0 && filtered.length < 5) {
+    const end = document.createElement('div');
+    end.className = 'qwqnt-pgp-group-end';
+    end.textContent = t("chat.noMoreEntries");
+    list.append(end);
+  }
+  list.scrollTop = scrollTop;
 }
 
 function bindingFor(state: GroupPanelState, member: Member): string {
@@ -515,9 +573,14 @@ async function loadGroup(panel: HTMLElement, force = false): Promise<void> {
   if (!state || !state.groupId || state.loading) return;
   const groupId = state.groupId;
   const version = ++state.version;
+  const hasRows = state.members.length > 0;
   state.loading = true;
   state.error = '';
-  renderPanel(panel);
+  if (hasRows) renderSummary(panel, state);
+  else renderPanel(panel);
+  const diagnostic = /^#\/chat(?:[/?]|$)/.test(location.hash);
+  if (diagnostic) log('[popout-group] load=start');
+  let phase = 'members-or-config';
   try {
     const [rawList, self, groupConfig] = await Promise.all([
       prefetchGroupMembers(groupId, force, accountId), window.QwQNTPgp.selfInfo().catch(() => null), getGroupConfig(groupId)
@@ -536,9 +599,10 @@ async function loadGroup(panel: HTMLElement, force = false): Promise<void> {
       normalized[index] = { uin, uid: raw.uid, name: safeName };
     }
     if (isNumericUin(state.selfUin) && !normalized.some(member => isSelf(state, member))) {
-      normalized.push({ uin: state.selfUin, uid: state.selfUid, name: self?.nick?.trim() || '我' });
+      normalized.push({ uin: state.selfUin, uid: state.selfUid, name: self?.nick?.trim() || t("chat.self") });
     }
     if (!isCurrentAccount(accountId, accountEpoch) || version !== state.version || state.groupId !== groupId || !panel.isConnected) return;
+    phase = 'key-bindings';
     const bindings = await getKeyBindings(normalized.map(member => member.uin).filter(isNumericUin));
     if (!isCurrentAccount(accountId, accountEpoch) || version !== state.version || state.groupId !== groupId || !panel.isConnected) return;
     state.bindings.clear();
@@ -546,6 +610,7 @@ async function loadGroup(panel: HTMLElement, force = false): Promise<void> {
     state.bindingSignature = bindingSignature(bindings);
     state.rawMembers = normalized;
     state.members = normalized.filter(member => isNumericUin(member.uin) && (isSelf(state, member) || state.bindings.has(member.uin)));
+    if (diagnostic) log(`[popout-group] load=success rosterEmpty=${rawList.length === 0} visibleEmpty=${state.members.length === 0}`);
     const knownMemberUins = new Set(normalized.map(member => member.uin).filter(isNumericUin));
     const storedTargets = numericUins(groupConfig.targets ?? []);
     const allowedTargets = new Set(state.members.map(member => member.uin));
@@ -554,9 +619,10 @@ async function loadGroup(panel: HTMLElement, force = false): Promise<void> {
     if (isNumericUin(state.selfUin)) state.selected.add(state.selfUin);
     log(`getGroupMembers(${groupId}) → ${state.members.length} 人`);
     if (rawList.length) void cleanupDepartedGroupTargets(groupId, groupConfig.targets, knownMemberUins, !completeRoster, accountId);
-    if (!rawList.length) state.error = '没有成员数据；可点刷新重试';
+    if (!rawList.length) state.error = t("chat.membersUnavailable");
   } catch (err) {
-    if (version === state.version && state.groupId === groupId && panel.isConnected) state.error = `拉取失败：${errorText(err)}（可刷新重试）`;
+    if (diagnostic) log(`[popout-group] load=failed phase=${phase}`);
+    if (version === state.version && state.groupId === groupId && panel.isConnected) state.error = t("chat.loadMembersFailed");
     log(`拉取群成员失败：${String(err)}`);
   } finally {
     if (version === state.version && state.groupId === groupId) {
@@ -588,7 +654,8 @@ async function persistTarget(panel: HTMLElement, groupId: string, id: string, en
         state.selected = new Set(config.targets);
       } catch { /* keep optimistic state */ }
     }
-    state.error = `保存失败：${errorText(err)}`;
+    log(`保存群加密状态失败：${String(err)}`);
+    state.error = t("chat.saveFailed");
     renderPanel(panel);
   });
   targetSaveQueues.set(queueKey, next);
@@ -612,10 +679,6 @@ function cleanupDepartedGroupTargets(
   const remove = preserveUnknown ? [] : numericUins(storedTargets).filter(id => id !== accountId && !knownMemberUins.has(id));
   return Promise.all(remove.map(id => isCurrentAccount(accountId, accountEpoch) ? setGroupTarget(groupId, id, false) : Promise.resolve()))
     .then(() => undefined).catch(err => { log(`清理无效群加密目标失败：${String(err)}`); });
-}
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /* ---------------- 私聊：加密开关 ---------------- */
@@ -670,7 +733,10 @@ async function tickDm(): Promise<void> {
   const accountEpoch = rendererAccountEpoch;
   const version = ++dmRenderVersion;
   // 只找当前可见的详情面板（避免注入到后台窗口 / 别的面板里）
-  const side = Array.from(document.querySelectorAll<HTMLElement>('.more-panel > .side-panel'))
+  const sideSelector = /^#\/chat(?:[/?]|$)/.test(location.hash)
+    ? '.side-panel:has(.panel-content .q-list.list-group)'
+    : '.more-panel > .side-panel';
+  const side = Array.from(document.querySelectorAll<HTMLElement>(sideSelector))
     .find(el => el.offsetParent !== null);
   // 群详情面板（有「我的本群昵称」）不注入私聊开关
   const peer = getCurrentPeer();
@@ -730,11 +796,12 @@ function buildDmItem(uin: string, isCurrent: () => boolean, nativeRow: HTMLEleme
   item.className = 'q-list-item vue-component';
   item.dataset.uin = uin;
   item.innerHTML = `
-    <div class="q-list-item_title"><h5>加密</h5></div>
+    <div class="q-list-item_title"><h5>${tHtml('chat.encryption')}</h5></div>
     <div class="q-list-item_tail">
-      <div class="q-switch vue-component" role="switch" bf-label-inner="true" aria-label="加密" aria-checked="false" aria-disabled="true" tabindex="-1"><span class="q-switch__handle"></span></div>
+      <div class="q-switch vue-component" role="switch" bf-label-inner="true" aria-checked="false" aria-disabled="true" tabindex="-1"><span class="q-switch__handle"></span></div>
     </div>
   `;
+  item.querySelector('.q-switch')?.setAttribute('aria-label', t('chat.encryption'));
   const toggle = item.querySelector<HTMLElement>('.q-switch')!;
   // QQ scopes the list-item spacing and switch styles to its Vue components.
   if (nativeRow) {
@@ -753,7 +820,8 @@ function buildDmItem(uin: string, isCurrent: () => boolean, nativeRow: HTMLEleme
     try {
       await window.QwQNTPgp.setDirectEncryption(uin, toggle.getAttribute('aria-checked') !== 'true');
     } catch (error) {
-      if (isCurrent() && item.isConnected) toast(`保存加密状态失败：${errorText(error)}`);
+      log(`保存私聊加密状态失败：${String(error)}`);
+      if (isCurrent() && item.isConnected) toast(t("chat.saveEncryptionFailed"));
     } finally {
       if (isCurrent() && item.isConnected) await tickDm();
       saving = false;

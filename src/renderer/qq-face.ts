@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 import { decodeFaceParts, encodeFaceParts, facePart, type FacePart } from '../shared/qq-face';
 
 const FACE_NODE = '[data-face-index], .editor-el__qqface-wrapper, img.editor-el__qqface, .little-face-element, .face-element, msg-qq-face, msg-qqface, [data-type="msgQQFace"], img[src*="/default-emojis/"]';
@@ -69,7 +70,7 @@ export function renderQQFaces(target: HTMLElement | DocumentFragment, text: stri
       target.append(element);
       continue;
     }
-    const label = part.label ? (part.label.startsWith('[') ? part.label : `[${part.label}]`) : '[QQ 表情]';
+    const label = part.label ? (part.label.startsWith('[') ? part.label : `[${part.label}]`) : t("face.fallback");
     const image = document.createElement('img');
     image.alt = label;
     image.width = image.height = 20;
@@ -79,7 +80,7 @@ export function renderQQFaces(target: HTMLElement | DocumentFragment, text: stri
     if (wrapper) {
       wrapper.className = 'face-element';
       wrapper.style.width = wrapper.style.height = '20px';
-      wrapper.setAttribute('aria-label', part.label || '表情');
+      wrapper.setAttribute('aria-label', part.label || t("face.label"));
       image.className = 'face-element__icon';
       image.dataset.faceIndex = String(part.face);
       image.dataset.role = 'qqFace';
